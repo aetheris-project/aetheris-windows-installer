@@ -23,7 +23,16 @@ The platform runs as a Docker stack (web, worker, backend, PostgreSQL, Redis). T
 
 ## Usage
 
-### Interactive wizard (recommended)
+### Via winget (recommended)
+
+```
+winget install AetherisProject.AetherisWindowsInstaller
+```
+
+Winget downloads the installer automatically, including Docker Desktop and
+Git for Windows as declared dependencies.
+
+### Interactive wizard
 
 Double-click `aetheris-windows-installer.exe` or run:
 
