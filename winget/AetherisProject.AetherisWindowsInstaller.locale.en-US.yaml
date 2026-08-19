@@ -1,10 +1,11 @@
-PackageIdentifier: LeoGalli.Aetheris
+PackageIdentifier: AetherisProject.AetherisWindowsInstaller
 PackageVersion: 1.0.0
 PackageLocale: en-US
 Publisher: Leo-Galli / Aetheris Project
 PublisherUrl: https://github.com/aetheris-project
 PublisherSupportUrl: https://github.com/aetheris-project/aetheris-app/issues
 PrivacyUrl: https://another-horizon.eu/privacy
+Author: Leo-Galli
 PackageName: Aetheris
 PackageUrl: https://github.com/aetheris-project/aetheris-app
 License: Aetheris License v1.0

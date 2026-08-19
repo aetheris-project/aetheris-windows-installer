@@ -1,4 +1,4 @@
-PackageIdentifier: LeoGalli.Aetheris
+PackageIdentifier: AetherisProject.AetherisWindowsInstaller
 PackageVersion: 1.0.0
 Platform:
 - Windows.Desktop

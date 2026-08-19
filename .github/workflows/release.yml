@@ -66,13 +66,14 @@ jobs:
           git clone --depth 1 https://github.com/microsoft/winget-pkgs.git $WINGET_DIR
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          $MANIFEST_DIR = Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris" $VERSION
+          $MANIFEST_DIR = Join-Path $WINGET_DIR "manifests" "a" "AetherisProject" "AetherisWindowsInstaller" $VERSION
           New-Item -ItemType Directory -Force -Path $MANIFEST_DIR | Out-Null
           Copy-Item winget/*.yaml $MANIFEST_DIR
           cd $MANIFEST_DIR
-          $EXISTS = Test-Path (Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris")
-          if ($EXISTS -and (Get-ChildItem (Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris") -Directory | Measure-Object).Count -gt 0) {
-            wingetcreate update LeoGalli.Aetheris --version $VERSION --url $EXE_URL --submit --token ${{ secrets.WINGET_PAT }}
+          $PKG_DIR = Join-Path $WINGET_DIR "manifests" "a" "AetherisProject" "AetherisWindowsInstaller"
+          $EXISTS = Test-Path $PKG_DIR
+          if ($EXISTS -and (Get-ChildItem $PKG_DIR -Directory | Measure-Object).Count -gt 0) {
+            wingetcreate update AetherisProject.AetherisWindowsInstaller --version $VERSION --url $EXE_URL --submit --token ${{ secrets.WINGET_PAT }}
           } else {
             wingetcreate new $EXE_URL --version $VERSION --submit --token ${{ secrets.WINGET_PAT }}
           }
