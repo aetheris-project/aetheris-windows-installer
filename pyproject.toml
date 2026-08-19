@@ -1,0 +1,24 @@
+[project]
+name = "aetheris-windows-installer"
+version = "1.0.0"
+description = "Interactive Windows installer for the Aetheris control plane (TUI, Docker-based)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+[project.optional-dependencies]
+tui = ["windows-curses>=2.3.1; platform_system == 'Windows'"]
+dev = ["pytest>=8", "pyinstaller>=6.6"]
+
+[project.scripts]
+aetheris-windows-install = "aetheris_wininstaller.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["aetheris_wininstaller*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
