@@ -4,7 +4,7 @@ Usage:
     python tools/update_winget_hash.py
 
 Reads dist/aetheris-windows-installer.exe, computes its SHA-256 digest, and
-replaces the REPLACE_WITH_SHA256 placeholder in winget/LeoGalli.Aetheris.installer.yaml.
+patches the InstallerSha256 field in the winget installer manifest.
 
 Run this after building the .exe and before committing the winget manifests.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ROOT / "dist" / "aetheris-windows-installer.exe"
-MANIFEST = ROOT / "winget" / "LeoGalli.Aetheris.installer.yaml"
+MANIFEST = ROOT / "winget" / "AetherisProject.AetherisWindowsInstaller.installer.yaml"
 PLACEHOLDER = "REPLACE_WITH_SHA256"
 
 
