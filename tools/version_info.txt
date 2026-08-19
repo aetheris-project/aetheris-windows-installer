@@ -15,13 +15,13 @@ VSVersionInfo(
         StringTable(
           u'040904B0',
           [
-            StringStruct(u'CompanyName', u'Aetheris Project'),
+            StringStruct(u'CompanyName', u'Leo-Galli / Aetheris Project'),
             StringStruct(u'FileDescription', u'Aetheris Windows Installer'),
             StringStruct(u'FileVersion', u'1.0.0.0'),
             StringStruct(u'InternalName', u'aetheris-windows-installer'),
-            StringStruct(u'LegalCopyright', u'Copyright (c) Aetheris Project'),
+            StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Leonardo Galli (Leo-Galli), Aetheris Project'),
             StringStruct(u'OriginalFilename', u'aetheris-windows-installer.exe'),
-            StringStruct(u'ProductName', u'Aetheris Windows Installer'),
+            StringStruct(u'ProductName', u'Aetheris'),
             StringStruct(u'ProductVersion', u'1.0.0.0')
           ]
         )

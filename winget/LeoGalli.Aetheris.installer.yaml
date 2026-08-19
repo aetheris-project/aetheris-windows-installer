@@ -1,0 +1,30 @@
+PackageIdentifier: LeoGalli.Aetheris
+PackageVersion: 1.0.0
+Platform:
+- Windows.Desktop
+MinimumOSVersion: 10.0.17763.0
+InstallerType: exe
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  Silent: --both
+  SilentWithProgress: --both
+  Interactive: ""
+UpgradeBehavior: install
+ProductCode: aetheris-windows-installer
+Dependencies:
+  PackageDependencies:
+  - PackageIdentifier: Docker.DockerDesktop
+  - PackageIdentifier: Git.Git
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/aetheris-project/aetheris-windows-installer/releases/download/v1.0.0/aetheris-windows-installer.exe
+  InstallerSha256: 1152ce8f93e0400ac776948277942e5a7b031f498910595ed0e90719b408cd3a
+  InstallerSwitches:
+    Silent: --both
+    SilentWithProgress: --both
+ManifestType: installer
+ManifestVersion: 1.12.0

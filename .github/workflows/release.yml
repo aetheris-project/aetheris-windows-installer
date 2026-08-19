@@ -1,0 +1,80 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[tui,dev]"
+
+      - name: Build executable
+        run: python tools/build_exe.py
+
+      - name: Update winget manifest hash
+        run: python tools/update_winget_hash.py
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aetheris-windows-installer-exe
+          path: dist/aetheris-windows-installer.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/aetheris-windows-installer.exe
+          generate_release_notes: true
+          draft: false
+
+  winget-submit:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aetheris-windows-installer-exe
+          path: dist/
+
+      - name: Install wingetcreate
+        run: winget install wingetcreate --accept-source-agreements --accept-package-agreements
+
+      - name: Submit winget manifest PR
+        run: |
+          $EXE_URL = "https://github.com/aetheris-project/aetheris-windows-installer/releases/download/${{ github.ref_name }}/aetheris-windows-installer.exe"
+          $VERSION = "${{ github.ref_name }}".Replace("v", "")
+          $WINGET_DIR = Join-Path $env:USERPROFILE "winget-pkgs"
+          if (Test-Path $WINGET_DIR) { Remove-Item -Recurse -Force $WINGET_DIR }
+          git clone --depth 1 https://github.com/microsoft/winget-pkgs.git $WINGET_DIR
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          $MANIFEST_DIR = Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris" $VERSION
+          New-Item -ItemType Directory -Force -Path $MANIFEST_DIR | Out-Null
+          Copy-Item winget/*.yaml $MANIFEST_DIR
+          cd $MANIFEST_DIR
+          $EXISTS = Test-Path (Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris")
+          if ($EXISTS -and (Get-ChildItem (Join-Path $WINGET_DIR "manifests" "l" "LeoGalli" "Aetheris") -Directory | Measure-Object).Count -gt 0) {
+            wingetcreate update LeoGalli.Aetheris --version $VERSION --url $EXE_URL --submit --token ${{ secrets.WINGET_PAT }}
+          } else {
+            wingetcreate new $EXE_URL --version $VERSION --submit --token ${{ secrets.WINGET_PAT }}
+          }
+        env:
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
