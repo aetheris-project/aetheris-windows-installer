@@ -5,25 +5,26 @@ Usage:
     WINGET_PAT=<token> python tools/update_winget_pr.py --dry-run
 
 This script:
-1. Clones microsoft/winget-pkgs (shallow)
-2. Fetches the PR branch from the upstream PR
+1. Uses the GitHub API to discover the PR head branch name
+2. Fetches that branch from the fork
 3. Replaces the manifest files with our local versions
 4. Pushes the changes back to update the PR
 
 Requirements:
     - Set WINGET_PAT environment variable with a GitHub PAT (public_repo scope)
     - The PR must already exist on microsoft/winget-pkgs
-
-The PR branch is auto-detected via git fetch origin pull/<number>/head.
+    - git and curl must be on PATH
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,15 +41,15 @@ class ScriptError(Exception):
     """Raised when a step fails."""
 
 
-def _mask_token(text: str, token: str) -> str:
-    """Replace the token in a string with *** for safe logging."""
-    if token and token in text:
-        return text.replace(token, "***")
+def _mask(text: str, secret: str) -> str:
+    """Replace a secret in text with *** for safe logging."""
+    if secret and secret in text:
+        return text.replace(secret, "***")
     return text
 
 
-def run(cmd: list[str], *, cwd: str | None = None, token: str = "") -> subprocess.CompletedProcess:
-    print(f"  $ {_mask_token(' '.join(cmd), token)}")
+def run(cmd: list[str], *, cwd: str | None = None, secret: str = "") -> subprocess.CompletedProcess:
+    print(f"  $ {_mask(' '.join(cmd), secret)}")
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
         if result.stdout.strip():
@@ -58,11 +59,27 @@ def run(cmd: list[str], *, cwd: str | None = None, token: str = "") -> subproces
     return result
 
 
-def require_run(cmd: list[str], *, cwd: str | None = None, token: str = "") -> subprocess.CompletedProcess:
-    result = run(cmd, cwd=cwd, token=token)
+def require(cmd: list[str], *, cwd: str | None = None, secret: str = "") -> subprocess.CompletedProcess:
+    result = run(cmd, cwd=cwd, secret=secret)
     if result.returncode != 0:
-        raise ScriptError(f"command failed: {_mask_token(' '.join(cmd), token)}")
+        raise ScriptError(f"command failed: {_mask(' '.join(cmd), secret)}")
     return result
+
+
+def get_pr_head_branch(pr_number: int, token: str) -> str:
+    """Use the GitHub REST API to discover the head branch name of a PR."""
+    url = f"https://api.github.com/repos/microsoft/winget-pkgs/pulls/{pr_number}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            head = data["head"]
+            return head["ref"]  # e.g. "AetherisProject.AetherisWindowsInstaller-1.0.0-..."
+    except Exception as exc:
+        raise ScriptError(f"could not fetch PR #{pr_number} metadata via API: {exc}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,14 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
     args = parser.parse_args(argv)
 
-    # Read token from environment
     token = os.environ.get("WINGET_PAT", "").strip()
     if not token and not args.dry_run:
         print("error: WINGET_PAT environment variable is not set", file=sys.stderr)
         print("  export WINGET_PAT=<your-github-pat>", file=sys.stderr)
         return 1
 
-    # Validate local manifests exist
     manifest_files = sorted(MANIFEST_DIR.glob("*.yaml"))
     if not manifest_files:
         print("error: no manifest files found in winget/", file=sys.stderr)
@@ -87,76 +102,93 @@ def main(argv: list[str] | None = None) -> int:
     for f in manifest_files:
         print(f"  {f.name}")
 
-    # Create a temporary directory for the clone
     with tempfile.TemporaryDirectory(prefix="winget-pkgs-") as tmpdir:
         clone_dir = Path(tmpdir) / "winget-pkgs"
 
         if args.dry_run:
-            print(f"\n[dry-run] would clone {UPSTREAM_REPO}")
-            print(f"[dry-run] would fetch PR #{PR_NUMBER} branch")
+            print(f"\n[dry-run] would query GitHub API for PR #{PR_NUMBER} head branch")
+            print(f"[dry-run] would clone {UPSTREAM_REPO}")
+            print(f"[dry-run] would fetch and check out the PR branch from {FORK_OWNER}'s fork")
             print(f"[dry-run] would copy manifests to manifests/{MANIFEST_PARTITION}/AetherisProject/AetherisWindowsInstaller/{VERSION}/")
             for f in manifest_files:
                 print(f"  {f.name}")
             print("[dry-run] would commit and push")
-        else:
-            try:
-                print(f"\nCloning {UPSTREAM_REPO} (shallow)...")
-                require_run(["git", "clone", "--depth", "1", UPSTREAM_REPO, str(clone_dir)], token=token)
+            print(f"\nDone! (dry-run)")
+            return 0
 
-                # Fetch the PR branch
-                print(f"\nFetching PR #{PR_NUMBER} branch...")
-                result = run(
-                    ["git", "fetch", "origin", f"pull/{PR_NUMBER}/head:pr-{PR_NUMBER}"],
-                    cwd=str(clone_dir),
-                    token=token,
-                )
-                if result.returncode != 0:
-                    raise ScriptError(f"could not fetch PR #{PR_NUMBER} branch")
+        try:
+            # Step 1: discover the PR head branch name via GitHub API
+            print(f"\nQuerying GitHub API for PR #{PR_NUMBER} head branch...")
+            head_branch = get_pr_head_branch(PR_NUMBER, token)
+            print(f"  PR head branch: {head_branch}")
 
-                branch = f"pr-{PR_NUMBER}"
-                print(f"  Found branch: {branch}")
+            # Step 2: clone the upstream repo
+            print(f"\nCloning {UPSTREAM_REPO} (shallow)...")
+            require(["git", "clone", "--depth", "1", UPSTREAM_REPO, str(clone_dir)], secret=token)
 
-                # Check out the PR branch
-                print(f"Checking out {branch}...")
-                require_run(["git", "checkout", branch], cwd=str(clone_dir), token=token)
+            # Step 3: fetch the PR head from the fork
+            fork_url = f"https://github.com/{FORK_OWNER}/winget-pkgs.git"
+            print(f"\nFetching branch '{head_branch}' from {FORK_OWNER}'s fork...")
+            require(
+                ["git", "fetch", "--depth", "1", fork_url, head_branch],
+                cwd=str(clone_dir),
+                secret=token,
+            )
 
-                # Configure git for commit
-                require_run(["git", "config", "user.name", "github-actions[bot]"], cwd=str(clone_dir), token=token)
-                require_run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], cwd=str(clone_dir), token=token)
+            # Step 4: check out the branch
+            print(f"Checking out '{head_branch}'...")
+            require(["git", "checkout", "FETCH_HEAD"], cwd=str(clone_dir), secret=token)
 
-                # Set up the remote with auth for push
-                auth_url = f"https://{token}@github.com/{FORK_OWNER}/winget-pkgs.git"
-                require_run(["git", "remote", "set-url", "origin", auth_url], cwd=str(clone_dir), token=token)
+            # Step 5: configure git
+            require(["git", "config", "user.name", "github-actions[bot]"], cwd=str(clone_dir), secret=token)
+            require(
+                ["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
+                cwd=str(clone_dir),
+                secret=token,
+            )
 
-                # Determine the manifest path in the repo
-                repo_manifest_dir = clone_dir / "manifests" / MANIFEST_PARTITION / "AetherisProject" / "AetherisWindowsInstaller" / VERSION
-                repo_manifest_dir.mkdir(parents=True, exist_ok=True)
+            # Step 6: set remote with auth
+            auth_url = f"https://{token}@github.com/{FORK_OWNER}/winget-pkgs.git"
+            require(["git", "remote", "set-url", "origin", auth_url], cwd=str(clone_dir), secret=token)
 
-                # Copy each manifest file
-                print(f"\nCopying manifests to {repo_manifest_dir.relative_to(clone_dir)}...")
-                for f in manifest_files:
-                    dest = repo_manifest_dir / f.name
-                    shutil.copy2(f, dest)
-                    print(f"  {f.name}")
+            # Step 7: copy manifests
+            repo_manifest_dir = (
+                clone_dir / "manifests" / MANIFEST_PARTITION
+                / "AetherisProject" / "AetherisWindowsInstaller" / VERSION
+            )
+            repo_manifest_dir.mkdir(parents=True, exist_ok=True)
 
-                # Stage and commit
-                print("\nCommitting changes...")
-                require_run(["git", "add", "-A"], cwd=str(clone_dir), token=token)
-                require_run(
-                    ["git", "commit", "-m", f"Update {PACKAGE_ID} {VERSION} manifests\n\nUpdate InstallerSha256, InstallerType (exe), Dependencies\n(Docker + Git), ManifestVersion (1.12.0), and metadata."],
-                    cwd=str(clone_dir),
-                    token=token,
-                )
+            print(f"\nCopying manifests to {repo_manifest_dir.relative_to(clone_dir)}...")
+            for f in manifest_files:
+                shutil.copy2(f, repo_manifest_dir / f.name)
+                print(f"  {f.name}")
 
-                # Push
-                print("\nPushing to fork...")
-                result = run(["git", "push", "origin", branch], cwd=str(clone_dir), token=token)
-                if result.returncode != 0:
-                    raise ScriptError("push failed — check your WINGET_PAT has 'public_repo' scope")
+            # Step 8: stage, commit, push
+            print("\nCommitting changes...")
+            require(["git", "add", "-A"], cwd=str(clone_dir), secret=token)
+            require(
+                [
+                    "git", "commit", "-m",
+                    f"Update {PACKAGE_ID} {VERSION} manifests\n\n"
+                    "Update InstallerSha256, InstallerType (exe), Dependencies\n"
+                    "(Docker + Git), ManifestVersion (1.12.0), and metadata.",
+                ],
+                cwd=str(clone_dir),
+                secret=token,
+            )
 
-            except ScriptError as exc:
-                print(f"\nerror: {exc}", file=sys.stderr)
-                return 1
+            print(f"\nPushing to {FORK_OWNER}/winget-pkgs:{head_branch}...")
+            result = run(
+                ["git", "push", "origin", f"HEAD:{head_branch}"],
+                cwd=str(clone_dir),
+                secret=token,
+            )
+            if result.returncode != 0:
+                raise ScriptError("push failed — check your WINGET_PAT has 'public_repo' scope")
+
+        except ScriptError as exc:
+            print(f"\nerror: {exc}", file=sys.stderr)
+            return 1
 
     print(f"\nDone! PR #{PR_NUMBER} should now show the updated manifests.")
     print(f"  https://github.com/microsoft/winget-pkgs/pull/{PR_NUMBER}")
