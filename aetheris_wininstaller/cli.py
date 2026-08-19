@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 
+from pathlib import Path
+
 from . import __version__
 from .deps import DEPENDENCIES
+from .options import DB_POSTGRES, DB_SQLITE, ENV_TIMING_LATER, ENV_TIMING_NOW, InstallOptions
 from .tui import run_tui
 
 DESCRIPTION = (
@@ -26,6 +29,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="print the commands that would run without executing them",
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        default=None,
+        help="target directory for the project (default %%USERPROFILE%%\\aetheris)",
+    )
+    parser.add_argument(
+        "--db",
+        choices=[DB_POSTGRES, DB_SQLITE],
+        default=DB_POSTGRES,
+        help="database engine: postgres (default) or sqlite local .db file",
+    )
+    parser.add_argument(
+        "--no-env",
+        action="store_true",
+        help="skip writing the .env file now; create it manually later",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -79,7 +99,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         deps = None
 
-    steps = run_action(action, deps=deps, dry_run=args.dry_run, progress=print)
+    install_options = InstallOptions(
+        base_dir=args.dir,
+        env_timing=ENV_TIMING_LATER if args.no_env else ENV_TIMING_NOW,
+        db_mode=args.db,
+    )
+    if args.dir:
+        print(f"Project directory: {args.dir}")
+    if action in ("software", "both"):
+        print(f"Database engine: {args.db}")
+        if args.no_env:
+            print(".env will not be written now; create it manually later.")
+
+    steps = run_action(action, deps=deps, options=install_options, dry_run=args.dry_run, progress=print)
     ok = True
     for step in steps:
         result = step.result

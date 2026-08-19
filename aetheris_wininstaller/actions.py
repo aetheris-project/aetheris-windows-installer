@@ -12,7 +12,8 @@ from pathlib import Path
 
 from .deps import Dependency
 from .envfile import write_env_file
-from .paths import APP_REPO_URL, InstallPaths, is_docker_installed
+from .options import InstallOptions
+from .paths import APP_REPO_URL, InstallPaths, detect_db_mode, is_docker_installed
 from .runner import CommandResult, run_command
 
 WINGET_BASE = ["winget", "install", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]
@@ -81,20 +82,32 @@ def _clone_or_update_app(paths: InstallPaths, *, dry_run: bool, quiet: bool = Fa
     )
 
 
-def _compose_up(paths: InstallPaths, *, dry_run: bool, quiet: bool = False) -> CommandResult:
+def _compose_up(paths: InstallPaths, options: InstallOptions, *, dry_run: bool, quiet: bool = False) -> CommandResult:
     if not dry_run:
-        write_env_file(paths.env_file)
+        write_env_file(
+            paths.env_file,
+            db_mode=options.db_mode,
+            env_timing=options.env_timing,
+        )
+    compose_file = paths.compose_for(options.db_mode)
     return run_command(
-        ["docker", "compose", "-f", str(paths.compose_file), "up", "-d", "--build"],
+        ["docker", "compose", "-f", str(compose_file), "up", "-d", "--build"],
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
     )
 
 
-def install_software(*, dry_run: bool = False, quiet: bool = False, progress=None) -> list[ActionStep]:
-    """Clone the app repo and bring up the full Docker stack."""
-    paths = InstallPaths.default()
+def install_software(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Clone the app repo and bring up the Docker stack."""
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
     steps: list[ActionStep] = []
 
     if progress:
@@ -111,23 +124,58 @@ def install_software(*, dry_run: bool = False, quiet: bool = False, progress=Non
     if not clone.ok:
         return steps
 
+    engine = "sqlite (local .db file)" if options.is_sqlite else "postgres"
     if progress:
-        progress("Starting the Docker stack (web, worker, backend, postgres, redis)...")
-    up = _compose_up(paths, dry_run=dry_run, quiet=quiet)
+        progress(f"Starting the Docker stack (web, worker, backend, redis, {engine})...")
+    up = _compose_up(paths, options, dry_run=dry_run, quiet=quiet)
     steps.append(ActionStep(name="compose-up", result=up))
+
+    if options.env_timing == "later" and up.ok:
+        steps.append(
+            ActionStep(
+                name="env-hint",
+                result=CommandResult(
+                    ok=True,
+                    returncode=0,
+                    output=(
+                        f"The stack is running with defaults. Create {paths.env_file} "
+                        "manually (see the repo .env.example), then restart the stack "
+                        "before configuring the platform."
+                    ),
+                ),
+            )
+        )
     return steps
 
 
-def uninstall_software(*, dry_run: bool = False, quiet: bool = False, progress=None) -> list[ActionStep]:
+def uninstall_software(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
     """Tear down the stack and remove the app directory."""
-    paths = InstallPaths.default()
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
     steps: list[ActionStep] = []
 
-    if paths.compose_file.exists():
+    # Target the engine the stack was actually installed with: the .env the
+    # installer wrote records it, so uninstalling an SQLite install does not
+    # accidentally point at the PostgreSQL compose file.
+    db_mode = detect_db_mode(paths.env_file) or options.db_mode
+    compose_file = paths.compose_for(db_mode)
+    if not compose_file.exists():
+        # Fall back to whichever compose file is present (engine mismatch);
+        # dry-run still emits the compose-down command either way.
+        alternate = paths.compose_sqlite_file if db_mode == "postgres" else paths.compose_file
+        if alternate.exists():
+            compose_file = alternate
+    if dry_run or compose_file.exists():
         if progress:
             progress("Stopping containers and removing volumes...")
         down = run_command(
-            ["docker", "compose", "-f", str(paths.compose_file), "down", "-v", "--remove-orphans"],
+            ["docker", "compose", "-f", str(compose_file), "down", "-v", "--remove-orphans"],
             cwd=str(paths.app),
             dry_run=dry_run,
             quiet=quiet,
@@ -166,6 +214,7 @@ def run_action(
     action: str,
     *,
     deps: list[Dependency] | None = None,
+    options: InstallOptions | None = None,
     dry_run: bool = False,
     quiet: bool = False,
     progress=None,
@@ -174,12 +223,12 @@ def run_action(
     if action == "deps":
         return install_dependencies(deps or [], dry_run=dry_run, quiet=quiet, progress=progress)
     if action == "software":
-        return install_software(dry_run=dry_run, quiet=quiet, progress=progress)
+        return install_software(options, dry_run=dry_run, quiet=quiet, progress=progress)
     if action == "both":
         dependency_steps = install_dependencies(deps or [], dry_run=dry_run, quiet=quiet, progress=progress)
         if any(not step.result.ok for step in dependency_steps):
             return dependency_steps
-        return dependency_steps + install_software(dry_run=dry_run, quiet=quiet, progress=progress)
+        return dependency_steps + install_software(options, dry_run=dry_run, quiet=quiet, progress=progress)
     if action == "uninstall":
-        return uninstall_software(dry_run=dry_run, quiet=quiet, progress=progress)
+        return uninstall_software(options, dry_run=dry_run, quiet=quiet, progress=progress)
     raise ValueError(f"unknown action: {action}")

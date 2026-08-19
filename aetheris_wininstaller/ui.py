@@ -40,3 +40,11 @@ def checkbox(prompt: str, options: list[str], selected: set[int]) -> set[int]:
                 selected.add(index)
         else:
             print("Invalid selection.")
+
+
+def input_text(prompt: str) -> str:
+    """Read a line of free text from the user."""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""

@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aetheris_wininstaller.deps import DEPENDENCIES  # noqa: E402
+from aetheris_wininstaller.options import DB_POSTGRES, DB_SQLITE, ENV_TIMING_NOW  # noqa: E402
 from aetheris_wininstaller.tui import TuiState  # noqa: E402
 
 
@@ -19,6 +20,9 @@ class TestTuiState:
         # Required dependencies are pre-selected.
         required = {i for i, d in enumerate(DEPENDENCIES) if d.required}
         assert state.selected_deps == required
+        assert state.env_timing == ENV_TIMING_NOW
+        assert state.db_mode == DB_POSTGRES
+        assert state.dir_input.endswith("aetheris")
 
     def test_toggle_optional_dep(self) -> None:
         state = TuiState()
@@ -45,19 +49,95 @@ class TestTuiState:
         assert state.screen_name == "deps"
         assert state.pending_action == "both"
 
-    def test_pick_software_goes_straight_to_confirm(self) -> None:
-        state = TuiState()
+    def test_pick_software_opens_dir_screen(self) -> None:
         from aetheris_wininstaller import tui
 
+        state = TuiState()
         index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "software")
         state.pick_action(index)
-        assert state.screen_name == "confirm"
+        assert state.screen_name == "dir"
         assert state.pending_action == "software"
 
-    def test_exit_raises(self) -> None:
-        state = TuiState()
+    def test_pick_uninstall_goes_straight_to_confirm(self) -> None:
         from aetheris_wininstaller import tui
 
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "uninstall")
+        state.pick_action(index)
+        assert state.screen_name == "confirm"
+        assert state.pending_action == "uninstall"
+
+    def test_dir_typing_and_flow(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "software")
+        state.pick_action(index)
+        assert state.screen_name == "dir"
+
+        # Type a custom path by simulating printable characters.
+        for ch in "C:\\myproject":
+            state.handle(ord(ch))
+        assert state.dir_input.endswith("C:\\myproject")
+
+        # Backspace removes one character.
+        state.handle(127)
+        assert not state.dir_input.endswith("C:\\myproject")
+
+        # Enter advances to the env screen, then to db, then to confirm.
+        state.handle(ord("\n"))
+        assert state.screen_name == "env"
+        state.handle(ord("\n"))
+        assert state.screen_name == "db"
+        state.handle(ord("\n"))
+        assert state.screen_name == "confirm"
+
+    def test_back_from_dir_returns_to_deps_for_both(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "both")
+        state.pick_action(index)
+        assert state.screen_name == "deps"
+        state._after_deps()  # deps -> dir
+        assert state.screen_name == "dir"
+        state.handle(27)  # Esc: back from dir
+        assert state.screen_name == "deps"
+
+    def test_back_from_dir_returns_to_main_for_software(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "software")
+        state.pick_action(index)
+        assert state.screen_name == "dir"
+        state.handle(27)  # Esc: back from dir
+        assert state.screen_name == "main"
+
+    def test_db_selection_flows_to_confirm(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "software")
+        state.pick_action(index)
+        state.handle(ord("\n"))  # dir -> env
+        state.handle(ord("\n"))  # env -> db
+        # Select sqlite (index 1).
+        state.handle(ord("j"))
+        state.handle(ord("\n"))
+        assert state.db_mode == DB_SQLITE
+        assert state.screen_name == "confirm"
+
+    def test_options_object_reflects_state(self) -> None:
+        state = TuiState()
+        options = state.options()
+        assert options.db_mode == DB_POSTGRES
+        assert str(options.resolved_base()).endswith("aetheris")
+
+    def test_exit_raises(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
         index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "exit")
         try:
             state.pick_action(index)
@@ -72,7 +152,7 @@ class TestTuiState:
         from aetheris_wininstaller.runner import CommandResult
 
         # Patch run_action so the test never touches git/docker/filesystem.
-        def fake_run_action(action, *, deps=None, dry_run=False, quiet=False, progress=None):
+        def fake_run_action(action, *, deps=None, options=None, dry_run=False, quiet=False, progress=None):
             if progress:
                 progress("fake step")
             return [
@@ -82,8 +162,13 @@ class TestTuiState:
         monkeypatch.setattr(tui, "run_action", fake_run_action)
 
         state = TuiState()
-        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "software")
+        from aetheris_wininstaller import tui as tui_module
+
+        index = next(i for i, (action, _) in enumerate(tui_module.ACTIONS) if action == "software")
         state.pick_action(index)
+        state.handle(ord("\n"))  # dir -> env
+        state.handle(ord("\n"))  # env -> db
+        state.handle(ord("\n"))  # db -> confirm
         assert state.screen_name == "confirm"
         state.confirm_and_run()
         assert state.screen_name == "run"

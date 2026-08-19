@@ -9,6 +9,9 @@ The platform runs as a Docker stack (web, worker, backend, PostgreSQL, Redis). T
 - Interactive TUI wizard with arrow-key navigation, archinstall-style (no emoji)
 - Dependency management through winget (Docker Desktop, Git for Windows, Node.js LTS, Python 3.12)
 - Software install: clones `aetheris-app` and runs `docker compose up -d --build`
+- **Choose the target directory** for the project during the wizard
+- **Choose when the `.env` is written**: now (recommended) or later, manually
+- **Choose the database engine**: PostgreSQL container or a local SQLite `.db` file (recommended for tests)
 - Uninstall: stops the stack, removes volumes and the application directory
 - Dry-run mode to preview every command without executing it
 - Plain-text fallback UI when the curses module is not available
@@ -28,7 +31,7 @@ Double-click `aetheris-windows-installer.exe` or run:
 aetheris-windows-installer
 ```
 
-Use the arrow keys (or j/k) to move, Space to toggle dependencies, Enter to confirm, q to quit.
+Use the arrow keys (or j/k) to move, Space to toggle dependencies, Enter to confirm, q to quit. On the directory screen you type the path directly (Backspace to edit, Esc to go back); on every other screen Esc goes back one step.
 
 ### Command line
 
@@ -44,6 +47,15 @@ aetheris-windows-installer --both
 
 # Stop the stack and remove the application directory
 aetheris-windows-installer --uninstall
+
+# Install into a custom directory (default: %USERPROFILE%\aetheris)
+aetheris-windows-installer --both --dir "D:\Aetheris"
+
+# Use a local SQLite .db file instead of the PostgreSQL container
+aetheris-windows-installer --both --db sqlite
+
+# Skip writing the .env now; you will create it manually later
+aetheris-windows-installer --software --no-env
 
 # Preview what would run, without executing anything
 aetheris-windows-installer --both --dry-run
@@ -82,7 +94,12 @@ The stack is available at:
 - Web UI: http://localhost:3000
 - Backend health: http://localhost:8000/health
 
-The application lives in `%USERPROFILE%\aetheris\aetheris-app` with its `.env` next to the compose file. A random `AETHERIS_SECRET` is generated on first install.
+The application lives in the directory you chose during the wizard (default `%USERPROFILE%\aetheris`) under `aetheris-app`, with its `.env` next to the compose file. A random `AETHERIS_SECRET` is generated on first install.
+
+Two database modes are supported:
+
+- **PostgreSQL** (default): the stack starts a Postgres container; a random `POSTGRES_PASSWORD` is generated.
+- **SQLite** (local `.db` file, recommended for tests): no database container is started; the stack uses `docker-compose.sqlite.yml` and stores data in a local `.db` file. Set `AETHERIS_DB_MODE=sqlite` in `.env` (the installer does this for you).
 
 ## Development
 

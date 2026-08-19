@@ -30,17 +30,46 @@ class InstallPaths:
     base: Path
     app: Path
     compose_file: Path
+    compose_sqlite_file: Path
     env_file: Path
 
     @classmethod
-    def default(cls) -> "InstallPaths":
-        base = home_dir() / "aetheris"
+    def default(cls, base: Path | None = None) -> "InstallPaths":
+        base = base or (home_dir() / "aetheris")
         return cls(
             base=base,
             app=base / APP_REPO_NAME,
             compose_file=base / APP_REPO_NAME / "docker-compose.yml",
+            compose_sqlite_file=base / APP_REPO_NAME / "docker-compose.sqlite.yml",
             env_file=base / APP_REPO_NAME / ".env",
         )
+
+    def compose_for(self, db_mode: str) -> Path:
+        """Pick the compose file for the requested database engine."""
+        if db_mode == "sqlite":
+            return self.compose_sqlite_file
+        return self.compose_file
+
+
+def detect_db_mode(env_file: Path) -> str | None:
+    """Return the database engine recorded in an existing .env, or None.
+
+    The installer writes AETHERIS_DB_MODE=sqlite when an install uses the
+    local .db file, so uninstalling can target the same compose file even
+    when the user does not repeat --db.
+    """
+    if not env_file.exists():
+        return None
+    try:
+        for raw in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("AETHERIS_DB_MODE="):
+                value = line.split("=", 1)[1].strip().lower()
+                if value:
+                    return value
+    except OSError:  # pragma: no cover - read failures fall back to defaults
+        return None
+    return None
 
 
 def is_docker_installed() -> bool:
