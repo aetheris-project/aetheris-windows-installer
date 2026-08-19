@@ -18,6 +18,7 @@ Requirements:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -83,7 +84,6 @@ def get_pr_head_branch(pr_number: int, token: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse
     parser = argparse.ArgumentParser(description="Update winget-pkgs PR with latest manifests")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing")
     args = parser.parse_args(argv)
