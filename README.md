@@ -71,6 +71,10 @@ On Windows the TUI requires the `windows-curses` package; it is pulled in by the
 
 Optional dependencies can be toggled in the wizard. Docker Desktop and Git are always required and cannot be deselected.
 
+## Uninstall behavior
+
+The uninstall action stops the stack with `docker compose down -v`, removes the volumes and then deletes the application directory. This is best-effort cleanup: if Docker Desktop is not running, the compose step fails but the directory is still removed (and any running containers are left for you to stop manually).
+
 ## After installation
 
 The stack is available at:
