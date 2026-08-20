@@ -7,22 +7,15 @@ progress screen and the non-interactive CLI share the same code path.
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from .deps import Dependency
 from .envfile import write_env_file
 from .options import InstallOptions
 from .paths import APP_REPO_URL, InstallPaths, detect_db_mode, is_docker_installed
-from .runner import CommandResult, run_command
+from .runner import ActionStep, CommandResult, run_command
 
 WINGET_BASE = ["winget", "install", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]
-
-
-@dataclass
-class ActionStep:
-    name: str
-    result: CommandResult
 
 
 def _winget_install(dep: Dependency, *, dry_run: bool, quiet: bool = False) -> CommandResult:
@@ -270,6 +263,59 @@ def stop_stack(
     return [ActionStep(name="stack-stop", result=stop)]
 
 
+def update_stack(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Update the Aetheris software to the latest container images.
+
+    Runs `docker compose pull` followed by `docker compose up -d`, so
+    containers are recreated with the new images while volumes and data are
+    kept. Always confirm with the user before calling this (the TUI and CLI
+    both require explicit confirmation).
+    """
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
+    compose_file = _resolve_compose(paths, options)
+    if not compose_file.exists() and not dry_run:
+        return [
+            ActionStep(
+                name="stack-update",
+                result=CommandResult(
+                    ok=False,
+                    returncode=-1,
+                    output=(
+                        "Aetheris is not installed yet: no compose file found at "
+                        f"{compose_file}. Install the software stack first."
+                    ),
+                ),
+            )
+        ]
+    if progress:
+        progress("Pulling the latest container images...")
+    pull = run_command(
+        ["docker", "compose", "-f", str(compose_file), "pull"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    pull_step = ActionStep(name="stack-update-pull", result=pull)
+    if not pull.ok:
+        return [pull_step]
+    if progress:
+        progress("Recreating containers with the updated images...")
+    up = run_command(
+        ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    return [pull_step, ActionStep(name="stack-update", result=up)]
+
+
 def stack_logs(
     options: InstallOptions | None = None,
     *,
@@ -402,4 +448,12 @@ def run_action(
         return stop_stack(options, dry_run=dry_run, quiet=quiet, progress=progress)
     if action == "logs":
         return stack_logs(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "update-stack":
+        return update_stack(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "update-installer":
+        # Lazy import: updater uses runner.ActionStep and would otherwise
+        # create an import cycle (actions -> updater -> actions).
+        from .updater import run_update
+
+        return run_update(dry_run=dry_run, quiet=quiet, progress=progress)
     raise ValueError(f"unknown action: {action}")

@@ -170,6 +170,53 @@ class TestActions:
         assert run_action("software", dry_run=True)[0].name == "docker-ready"
         assert run_action("uninstall", dry_run=True)[0].name == "compose-down"
 
+    def test_update_stack_dry_run(self, capsys, tmp_path: Path) -> None:
+        from aetheris_wininstaller.actions import update_stack
+
+        app_dir = tmp_path / "aetheris-app"
+        app_dir.mkdir(parents=True)
+        (app_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+        steps = update_stack(InstallOptions(base_dir=tmp_path), dry_run=True)
+        names = [s.name for s in steps]
+        assert names == ["stack-update-pull", "stack-update"]
+        assert all(s.result.ok for s in steps)
+        captured = capsys.readouterr()
+        assert "docker compose" in captured.out
+        assert "pull" in captured.out
+
+    def test_update_stack_not_installed_is_a_clear_failure(self, tmp_path: Path) -> None:
+        from aetheris_wininstaller.actions import update_stack
+
+        steps = update_stack(InstallOptions(base_dir=tmp_path))
+        assert len(steps) == 1
+        assert steps[0].name == "stack-update"
+        assert steps[0].result.ok is False
+        assert "not installed yet" in steps[0].result.output
+
+    def test_run_action_update_stack_dispatch(self, capsys) -> None:
+        steps = run_action("update-stack", dry_run=True)
+        assert steps[0].name == "stack-update-pull"
+        captured = capsys.readouterr()
+        assert "pull" in captured.out
+
+    def test_run_action_update_installer_dry_run(self) -> None:
+        steps = run_action("update-installer", dry_run=True)
+        names = [s.name for s in steps]
+        assert "update-check" in names
+        assert "update-apply" in names
+        assert all(s.result.ok for s in steps)
+
+    def test_update_stack_uses_detected_sqlite_compose(self, capsys, tmp_path: Path) -> None:
+        app_dir = tmp_path / "aetheris-app"
+        app_dir.mkdir(parents=True)
+        (app_dir / "docker-compose.sqlite.yml").write_text("services: {}\n", encoding="utf-8")
+        (app_dir / ".env").write_text("AETHERIS_DB_MODE=sqlite\n", encoding="utf-8")
+
+        run_action("update-stack", options=InstallOptions(base_dir=tmp_path), dry_run=True)
+        captured = capsys.readouterr()
+        assert "docker-compose.sqlite.yml" in captured.out
+
     def test_run_action_management_dispatch_dry_run(self, capsys) -> None:
         from aetheris_wininstaller.actions import stack_logs, stack_status, start_stack, stop_stack
 

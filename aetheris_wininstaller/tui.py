@@ -63,17 +63,22 @@ ACTIONS = [
     ("start", "Start the Aetheris stack"),
     ("stop", "Stop the Aetheris stack (containers stay)"),
     ("logs", "Console - live stack logs (follow)"),
+    ("update-installer", "Update the installer (download the latest release)"),
+    ("update-stack", "Update Aetheris software (pull latest images)"),
     ("exit", "Exit"),
 ]
 
 # First index of the management section (used to draw a section header).
 MANAGE_START = 4
+# First index of the updates section (used to draw a section header).
+UPDATE_START = 8
 
 DEPS_ACTIONS = {"deps", "both"}
 OPTIONS_ACTIONS = {"software", "both"}
 RUN_IMMEDIATE_ACTIONS = {"status"}
 CONFIRM_ACTIONS = {"start", "stop"}
 MANAGE_ACTIONS = {"status", "start", "stop", "logs"}
+UPDATE_ACTIONS = {"update-installer", "update-stack"}
 
 ENV_TIMING_OPTIONS = [
     (ENV_TIMING_NOW, "Create .env now (recommended)"),
@@ -146,6 +151,8 @@ class TuiState:
         self.finished: list[tuple[str, bool]] = []
         self.final_message = ""
         self.running = False
+        self.confirm_stage = 0
+        self.update_info = None
         self.logs_following = False
         self.log_lines: list[str] = []
         self._stop_follow_event: threading.Event | None = None
@@ -171,6 +178,7 @@ class TuiState:
         if action == "exit":
             raise SystemExit(0)
         self.pending_action = action
+        self.confirm_stage = 0
         if action in DEPS_ACTIONS:
             self.screen_name = "deps"
             self.dep_cursor = 0
@@ -426,12 +434,27 @@ class TuiState:
 
     def _draw_main(self, screen, height: int, width: int) -> None:
         row = 5
+        if self.update_info is not None:
+            self._put(
+                screen,
+                row,
+                2,
+                f"Update available: v{self.update_info.version} - select 'Update the installer'",
+                width - 4,
+                self._attr(bold=True, pair=PAIR_WARN),
+            )
+            row += 1
         self._put(screen, row, 2, "Setup", width - 4, self._attr(bold=True, pair=PAIR_ACCENT))
         row += 1
         for index, (_, label) in enumerate(ACTIONS):
             if index == MANAGE_START:
                 row += 1
                 self._put(screen, row, 2, "Manage the stack", width - 4,
+                          self._attr(bold=True, pair=PAIR_ACCENT))
+                row += 1
+            elif index == UPDATE_START:
+                row += 1
+                self._put(screen, row, 2, "Updates", width - 4,
                           self._attr(bold=True, pair=PAIR_ACCENT))
                 row += 1
             selected = index == self.cursor
@@ -536,9 +559,95 @@ class TuiState:
             db_mode = detect_db_mode(paths.env_file) or options.db_mode
             self._put(screen, row, 2, f"  Compose: {paths.compose_for(db_mode).name}", width - 4)
             row += 1
+        if action in UPDATE_ACTIONS:
+            self._put(
+                screen,
+                row,
+                2,
+                f"  Current version: v{__version__}",
+                width - 4,
+            )
+            row += 1
+            if action == "update-installer":
+                target = f"v{self.update_info.version}" if self.update_info is not None else "the latest release"
+                self._put(screen, row, 2, f"  Target version: {target}", width - 4)
+                row += 1
+                self._put(
+                    screen,
+                    row,
+                    2,
+                    "  The wizard will download the new executable, close itself",
+                    width - 4,
+                    self._attr(dim=True),
+                )
+                row += 1
+                self._put(
+                    screen,
+                    row,
+                    2,
+                    "  and relaunch as the new version automatically.",
+                    width - 4,
+                    self._attr(dim=True),
+                )
+            else:
+                options = self.options()
+                paths = InstallPaths.default(options.resolved_base())
+                db_mode = detect_db_mode(paths.env_file) or options.db_mode
+                self._put(screen, row, 2, f"  Compose: {paths.compose_for(db_mode).name}", width - 4)
+                row += 1
+                self._put(
+                    screen,
+                    row,
+                    2,
+                    "  Pulls the latest images and recreates containers.",
+                    width - 4,
+                    self._attr(dim=True),
+                )
+                row += 1
+                self._put(
+                    screen,
+                    row,
+                    2,
+                    "  Volumes and data are kept; a short downtime occurs.",
+                    width - 4,
+                    self._attr(dim=True),
+                )
         row += 1
-        self._put(screen, row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
-        self._footer(screen, height, width, "Enter: start   Esc/q: back to the main menu")
+        if action in UPDATE_ACTIONS and self.confirm_stage == 0:
+            self._put(
+                screen,
+                row,
+                2,
+                "  WARNING: this changes your installation.",
+                width - 4,
+                self._attr(bold=True, pair=PAIR_WARN),
+            )
+            row += 1
+            self._put(
+                screen,
+                row,
+                2,
+                "  Press Enter once more to confirm.",
+                width - 4,
+                self._attr(bold=True, pair=PAIR_WARN),
+            )
+        elif action in UPDATE_ACTIONS:
+            self._put(
+                screen,
+                row,
+                2,
+                "  Confirmed. Press Enter to start.",
+                width - 4,
+                self._attr(bold=True, pair=PAIR_ACCENT),
+            )
+        else:
+            self._put(screen, row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
+        self._footer(
+            screen,
+            height,
+            width,
+            "Enter: start   Esc/q: back to the main menu",
+        )
 
     def _draw_run(self, screen, height: int, width: int) -> None:
         action = self.pending_action or "software"
@@ -627,7 +736,13 @@ class TuiState:
         row += 2
         self._put(screen, row, 2, self.final_message, width - 4, self._attr(bold=True))
         row += 2
-        if ok:
+        if ok and self.pending_action == "update-installer":
+            self._put(screen, row, 2, "The update is applied. The wizard will close now", width - 4,
+                      self._attr(bold=True, pair=PAIR_ACCENT))
+            row += 1
+            self._put(screen, row, 2, "and relaunch as the new version automatically.", width - 4,
+                      self._attr(bold=True, pair=PAIR_ACCENT))
+        elif ok:
             self._put(screen, row, 2, "Next steps:", width - 4, self._attr(bold=True, pair=PAIR_ACCENT))
             row += 1
             for step in NEXT_STEPS:
@@ -714,7 +829,11 @@ class TuiState:
 
         elif self.screen_name == "confirm":
             if key in enter_keys:
-                self.confirm_and_run()
+                if self.pending_action in UPDATE_ACTIONS and self.confirm_stage == 0:
+                    # Update actions require a second, explicit confirmation.
+                    self.confirm_stage = 1
+                else:
+                    self.confirm_and_run()
             elif key in back_keys:
                 self.screen_name = "main"
 
@@ -735,6 +854,10 @@ class TuiState:
     def run(self, screen) -> int:
         curses.curs_set(0)
         self._setup_colors(screen)
+        # Best-effort update check: never blocks or breaks the wizard.
+        from .updater import check_for_update
+
+        self.update_info = check_for_update(timeout=4.0)
         while True:
             self.draw(screen)
             if self.running or self.logs_following:
@@ -804,12 +927,27 @@ def run_prompt_fallback() -> int:
             env_timing=select("When should the .env be written?", [label for _, label in ENV_TIMING_OPTIONS]),
             db_mode=select("Which database engine?", [label for _, label in DB_OPTIONS]),
         )
-    elif action in MANAGE_ACTIONS:
+    elif action in MANAGE_ACTIONS or action in UPDATE_ACTIONS:
         base = input_text(f"Project directory ({install_options.resolved_base()}): ").strip()
         install_options = InstallOptions(
             base_dir=Path(base) if base else None,
             db_mode=select("Which database engine is installed?", [label for _, label in DB_OPTIONS]),
         )
+        if action in UPDATE_ACTIONS:
+            from .runner import confirm_continue
+
+            confirm_text = (
+                "Download and apply the latest installer release"
+                if action == "update-installer"
+                else "Pull the latest images and recreate the stack containers"
+            )
+            if not confirm_continue(f"{confirm_text}?"):
+                print("Cancelled.")
+                return 0
+            if action == "update-installer":
+                if not confirm_continue("The wizard will close and relaunch as the new version. Continue?"):
+                    print("Cancelled.")
+                    return 0
 
     print()
     steps = run_action(action, deps=deps, options=install_options, progress=print)

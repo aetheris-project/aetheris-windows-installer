@@ -195,6 +195,67 @@ class TestTuiState:
         assert state.screen_name == "confirm"
         assert state.pending_action == "start"
 
+    def test_update_actions_are_in_the_menu(self) -> None:
+        from aetheris_wininstaller import tui
+
+        actions = [action for action, _ in tui.ACTIONS]
+        assert "update-installer" in actions
+        assert "update-stack" in actions
+        assert actions.index("update-installer") < actions.index("exit")
+        assert actions.index("update-stack") < actions.index("exit")
+
+    def test_pick_update_stack_goes_to_confirm(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "update-stack")
+        state.pick_action(index)
+        assert state.screen_name == "confirm"
+        assert state.pending_action == "update-stack"
+        assert state.confirm_stage == 0
+
+    def test_update_action_requires_double_confirmation(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "update-stack")
+        state.pick_action(index)
+        assert state.screen_name == "confirm"
+
+        # First Enter only arms the confirmation.
+        state.handle(ord("\n"))
+        assert state.screen_name == "confirm"
+        assert state.confirm_stage == 1
+        assert state.running is False
+
+        # Second Enter actually starts the action.
+        state.handle(ord("\n"))
+        assert state.screen_name == "run"
+
+    def test_non_update_action_starts_on_first_enter(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "uninstall")
+        state.pick_action(index)
+        state.handle(ord("\n"))
+        assert state.screen_name == "run"
+
+    def test_update_banner_is_drawn_when_update_available(self) -> None:
+        from aetheris_wininstaller import tui
+        from aetheris_wininstaller.updater import UpdateInfo
+
+        state = TuiState()
+        state.update_info = UpdateInfo(
+            version="9.9.9",
+            asset_url="https://example.com/exe",
+            browser_url="https://example.com",
+            notes="",
+        )
+        screen = _RejectUnicodeScreen()
+        state.draw(screen)
+        assert any("Update available: v9.9.9" in text for _, _, text in screen.buffer)
+
     def test_pick_logs_opens_console_and_esc_returns(self, monkeypatch, tmp_path: Path) -> None:
         from aetheris_wininstaller import tui
 

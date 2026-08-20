@@ -24,6 +24,14 @@ class CommandResult:
     lines: list[str] = field(default_factory=list)
 
 
+@dataclass
+class ActionStep:
+    """One executed step: a name and the result of its command."""
+
+    name: str
+    result: CommandResult
+
+
 def run_command(
     args: list[str],
     *,

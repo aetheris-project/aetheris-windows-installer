@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 
 from pathlib import Path
 
@@ -93,6 +94,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the last --tail lines of the whole stack",
     )
+    mode.add_argument(
+        "--update-stack",
+        action="store_true",
+        help="update the Aetheris software to the latest images (compose pull + up -d)",
+    )
+    mode.add_argument(
+        "--update",
+        action="store_true",
+        help="update the installer itself to the latest release (asks for confirmation)",
+    )
+    mode.add_argument(
+        "--update-check",
+        action="store_true",
+        help="check whether a newer installer release exists",
+    )
     parser.add_argument(
         "--tail",
         type=int,
@@ -106,15 +122,64 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    modes = (args.deps, args.software, args.both, args.uninstall, args.status, args.start, args.stop, args.logs)
+    modes = (
+        args.deps,
+        args.software,
+        args.both,
+        args.uninstall,
+        args.status,
+        args.start,
+        args.stop,
+        args.logs,
+        args.update_stack,
+        args.update,
+        args.update_check,
+    )
     if not any(modes):
         # Default: interactive wizard (tui handles the curses fallback).
         if args.dry_run:
             parser.error(
                 "--dry-run requires a mode flag "
-                "(--deps, --software, --both, --uninstall, --status, --start, --stop or --logs)"
+                "(--deps, --software, --both, --uninstall, --status, --start, --stop, "
+                "--logs, --update-stack, --update or --update-check)"
             )
         return run_tui()
+
+    from . import updater
+    from .runner import confirm_continue
+
+    if args.update_check:
+        info = updater.check_for_update()
+        if info is None:
+            print(f"Aetheris Windows Installer v{__version__} is up to date.")
+        else:
+            print(f"Update available: v{info.version} (current: v{__version__})")
+            print(info.browser_url)
+        return 0
+
+    if args.update:
+        info = updater.check_for_update()
+        if info is None:
+            print(f"Aetheris Windows Installer v{__version__} is up to date.")
+            return 0
+        print(f"New version available: v{info.version} (current: v{__version__})")
+        if not confirm_continue(f"Download v{info.version} now?"):
+            print("Update cancelled.")
+            return 0
+        target = Path(tempfile.gettempdir()) / f"aetheris-installer-{info.version}.exe"
+        print(f"Downloading v{info.version}...")
+        try:
+            updater.download_asset(info.asset_url, target)
+        except Exception as exc:  # noqa: BLE001 - report the network failure
+            print(f"error: download failed: {exc}")
+            return 1
+        print(f"Downloaded to {target}")
+        if not confirm_continue("The installer will close and relaunch as the new version. Proceed?"):
+            print("Update downloaded but not applied. Re-run --update to apply it.")
+            return 0
+        applied, message = updater.apply_update(target)
+        print(message)
+        return 0 if applied else 1
 
     from .actions import run_action
     from .runner import print_fail, print_ok
@@ -127,7 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         else "status" if args.status
         else "start" if args.start
         else "stop" if args.stop
-        else "logs"
+        else "logs" if args.logs
+        else "update-stack" if args.update_stack
+        else "update-installer" if args.update
+        else "update-check"
     )
 
     if action in ("deps", "both"):

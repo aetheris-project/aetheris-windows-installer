@@ -21,7 +21,7 @@ Dependencies:
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/aetheris-project/aetheris-windows-installer/releases/download/v1.0.0/aetheris-windows-installer.exe
-  InstallerSha256: 84d322e66438d284e0f1281610fcbe24c9245d81204d3b2c0223e7ee61a98f50
+  InstallerSha256: 581bcfa41e6b3e00238c961c054d70a0b5fcf05d3471803f56eb73e3139080ee
   InstallerSwitches:
     Silent: --software
     SilentWithProgress: --software
