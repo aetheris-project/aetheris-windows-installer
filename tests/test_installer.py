@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from aetheris_wininstaller.actions import (  # noqa: E402
+    ActionStep,
     install_dependencies,
     install_software,
     run_action,
@@ -213,3 +214,40 @@ class TestRunner:
         assert result.ok
         captured = capsys.readouterr()
         assert "[dry-run] some command" in captured.out
+
+
+class TestCliExitCodes:
+    """Exit-code contract of the non-interactive CLI.
+
+    Software-stack steps (docker-ready / compose-up) are best-effort because
+    they depend on Docker Desktop having been started by the user; dependency
+    failures remain fatal. This mirrors the silent winget install path.
+    """
+
+    def test_software_docker_not_ready_is_best_effort(self, monkeypatch, capsys) -> None:
+        from aetheris_wininstaller import actions, cli
+
+        fake_steps = [
+            ActionStep("docker-ready", CommandResult(ok=False, returncode=-1, output="docker.exe not found")),
+        ]
+        monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
+        assert cli.main(["--software"]) == 0
+        assert "Docker is not ready yet" in capsys.readouterr().out
+
+    def test_software_dependency_failure_is_fatal(self, monkeypatch, capsys) -> None:
+        from aetheris_wininstaller import actions, cli
+
+        fake_steps = [
+            ActionStep("dependency:Docker.DockerDesktop", CommandResult(ok=False, returncode=1, output="failed")),
+        ]
+        monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
+        assert cli.main(["--both"]) == 1
+
+    def test_deps_failure_is_fatal(self, monkeypatch, capsys) -> None:
+        from aetheris_wininstaller import actions, cli
+
+        fake_steps = [
+            ActionStep("dependency:Git.Git", CommandResult(ok=False, returncode=1, output="failed")),
+        ]
+        monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
+        assert cli.main(["--deps"]) == 1

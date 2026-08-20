@@ -63,12 +63,17 @@ DB_OPTIONS = [
     (DB_SQLITE, "SQLite - local .db file (recommended for tests)"),
 ]
 
-# Safe key constants that work even when the curses module is unavailable
-# (the tests import this module on machines without windows-curses).
+# Safe key/attribute constants that work even when the curses module is
+# unavailable (the tests import this module on machines without
+# windows-curses, and the PyInstaller build may not bundle it).
 KEY_UP = getattr(curses, "KEY_UP", 259) if curses else 259
 KEY_DOWN = getattr(curses, "KEY_DOWN", 258) if curses else 258
 KEY_ENTER = getattr(curses, "KEY_ENTER", 10) if curses else 10
 KEY_BACKSPACE = getattr(curses, "KEY_BACKSPACE", 263) if curses else 263
+A_NORMAL = getattr(curses, "A_NORMAL", 0) if curses else 0
+A_BOLD = getattr(curses, "A_BOLD", 0) if curses else 0
+A_DIM = getattr(curses, "A_DIM", 0) if curses else 0
+A_REVERSE = getattr(curses, "A_REVERSE", 0) if curses else 0
 
 # Color pairs (indexes into curses.init_pair).
 PAIR_ACCENT = 1   # green on default (brand emerald)
@@ -191,16 +196,16 @@ class TuiState:
         except curses.error:  # pragma: no cover - depends on the terminal
             self._colors = False
 
-    def _attr(self, base: int = curses.A_NORMAL, *, pair: int | None = None, bold: bool = False, dim: bool = False, reverse: bool = False) -> int:
+    def _attr(self, base: int = A_NORMAL, *, pair: int | None = None, bold: bool = False, dim: bool = False, reverse: bool = False) -> int:
         attr = base
         if self._colors and pair is not None:
             attr |= curses.color_pair(pair)
         if bold:
-            attr |= curses.A_BOLD
+            attr |= A_BOLD
         if dim:
-            attr |= curses.A_DIM
+            attr |= A_DIM
         if reverse:
-            attr |= curses.A_REVERSE
+            attr |= A_REVERSE
         return attr
 
     # ------------------------------------------------------------------
@@ -237,11 +242,11 @@ class TuiState:
     def _draw_minimal(self, screen, height: int, width: int) -> None:
         """Last-resort layout for very small terminals."""
         try:
-            screen.addnstr(0, 0, TITLE, width, curses.A_BOLD)
+            screen.addnstr(0, 0, TITLE, width, A_BOLD)
             if self.screen_name == "main":
                 for index, (_, label) in enumerate(ACTIONS):
                     cursor = ">" if index == self.cursor else " "
-                    attr = self._attr(reverse=True) if index == self.cursor else curses.A_NORMAL
+                    attr = self._attr(reverse=True) if index == self.cursor else A_NORMAL
                     screen.addnstr(index + 2, 0, f"{cursor} {label}", width, attr)
         except curses.error:
             pass
@@ -273,7 +278,7 @@ class TuiState:
         for index, (_, label) in enumerate(ACTIONS):
             selected = index == self.cursor
             cursor = ">" if selected else " "
-            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         self._footer(screen, height, width, "Up/Down or j/k: move   Enter: select   q: quit")
@@ -289,7 +294,7 @@ class TuiState:
             cursor = ">" if selected else " "
             suffix = " (required)" if dep.required else ""
             text = f"{cursor} {marker} {dep.label}{suffix}"
-            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
             if not selected and checked:
                 attr = self._attr(pair=PAIR_ACCENT)
             screen.addnstr(row, 2, text, width - 4, attr)
@@ -320,7 +325,7 @@ class TuiState:
         for index, (_, label) in enumerate(ENV_TIMING_OPTIONS):
             selected = index == self.option_cursor
             cursor = ">" if selected else " "
-            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1
@@ -334,7 +339,7 @@ class TuiState:
         for index, (_, label) in enumerate(DB_OPTIONS):
             selected = index == self.option_cursor
             cursor = ">" if selected else " "
-            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1

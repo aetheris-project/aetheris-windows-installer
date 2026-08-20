@@ -112,7 +112,16 @@ def main(argv: list[str] | None = None) -> int:
             print(".env will not be written now; create it manually later.")
 
     steps = run_action(action, deps=deps, options=install_options, dry_run=args.dry_run, progress=print)
+
+    # The Docker engine must be running before the stack can start; right after a
+    # fresh Docker Desktop install that only happens once the user starts it and
+    # logs in. In non-interactive mode those environment-dependent steps are
+    # best-effort: the run completes successfully and prints guidance instead of
+    # failing (the interactive TUI still surfaces failures explicitly).
+    best_effort = {"docker-ready", "compose-up"}
+
     ok = True
+    environment_pending = False
     for step in steps:
         result = step.result
         if result.ok:
@@ -123,7 +132,21 @@ def main(argv: list[str] | None = None) -> int:
             print_fail(f"{step.name}")
             for line in result.lines[-3:]:
                 print(f"    {line}")
-            ok = False
+            if step.name in best_effort:
+                environment_pending = True
+            else:
+                ok = False
+
+    if action in ("software", "both"):
+        if environment_pending:
+            print("Docker is not ready yet: start Docker Desktop, then re-run the")
+            print("installer with --software to bring the Aetheris stack up.")
+        elif not ok:
+            print("The software stack could not be brought up automatically.")
+            print("Fix the reported failures above, then re-run the installer.")
+        else:
+            print("The Aetheris software stack is in place.")
+
     return 0 if ok else 1
 
 
