@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: AetherisProject.AetherisWindowsInstaller
 PackageVersion: 1.0.0
 Platform:
@@ -5,6 +6,7 @@ Platform:
 MinimumOSVersion: 10.0.17763.0
 InstallerType: exe
 Scope: user
+ElevationRequirement: elevationRequired
 InstallModes:
 - interactive
 - silent
@@ -12,9 +14,7 @@ InstallModes:
 InstallerSwitches:
   Silent: --both
   SilentWithProgress: --both
-  Interactive: ""
 UpgradeBehavior: install
-ProductCode: aetheris-windows-installer
 Dependencies:
   PackageDependencies:
   - PackageIdentifier: Docker.DockerDesktop
@@ -22,7 +22,7 @@ Dependencies:
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/aetheris-project/aetheris-windows-installer/releases/download/v1.0.0/aetheris-windows-installer.exe
-  InstallerSha256: 624837f9018f3d65797742d2a040165378d02bd66e365e9caf223c017720347b
+  InstallerSha256: fff5641607eb812be6a8596b246fcd771265fe6ddc8e866fd426a0e5a23a6315
   InstallerSwitches:
     Silent: --both
     SilentWithProgress: --both
