@@ -1,14 +1,19 @@
 """Subprocess runner with dry-run support.
 
 Commands are executed through subprocess with real-time output capture so
-the TUI progress screen can stream lines as they appear.
+the TUI progress screen can stream lines as they appear. Long-lived
+commands (docker compose logs -f) use :func:`stream_command`, which calls
+an on_line callback for every line and can be stopped from another thread
+through a threading.Event.
 """
 
 from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 
 @dataclass
@@ -69,6 +74,74 @@ def run_command(
         lines=lines,
     )
     return result
+
+
+LineCallback = Callable[[str], None]
+
+
+def stream_command(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    on_line: Optional[LineCallback] = None,
+    stop_event: Optional[threading.Event] = None,
+    encoding: str = "utf-8",
+) -> CommandResult:
+    """Run a long-lived command, streaming every line to on_line.
+
+    Designed for interactive tails such as `docker compose logs -f`: the
+    process keeps running until it exits on its own or stop_event is set,
+    in which case the process is terminated and the result reports a
+    successful (user-initiated) stop.
+
+    Returns a CommandResult; when the process was stopped through
+    stop_event the result is ok=True with a short note.
+    """
+    command_line = " ".join(args)
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding=encoding,
+            errors="replace",
+        )
+    except OSError as exc:
+        return CommandResult(ok=False, returncode=-1, output=f"could not start process: {exc}")
+
+    lines: list[str] = []
+    stopped = False
+    assert proc.stdout is not None
+    try:
+        for raw in proc.stdout:
+            if stop_event is not None and stop_event.is_set():
+                stopped = True
+                proc.terminate()
+                break
+            line = raw.rstrip()
+            lines.append(line)
+            if on_line is not None:
+                on_line(line)
+    finally:
+        returncode = proc.wait()
+
+    if stopped:
+        return CommandResult(
+            ok=True,
+            returncode=0,
+            output="follow stopped by the user",
+            lines=lines,
+        )
+    return CommandResult(
+        ok=returncode == 0,
+        returncode=returncode,
+        output="\n".join(lines),
+        lines=lines,
+    )
 
 
 def confirm_continue(prompt: str, default: bool = True) -> bool:

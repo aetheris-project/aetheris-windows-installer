@@ -73,6 +73,32 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="stop the stack and remove the application directory",
     )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="show the running state of every stack container (docker compose ps)",
+    )
+    mode.add_argument(
+        "--start",
+        action="store_true",
+        help="bring the Aetheris stack up (docker compose up -d)",
+    )
+    mode.add_argument(
+        "--stop",
+        action="store_true",
+        help="stop the Aetheris stack, keeping containers and volumes",
+    )
+    mode.add_argument(
+        "--logs",
+        action="store_true",
+        help="print the last --tail lines of the whole stack",
+    )
+    parser.add_argument(
+        "--tail",
+        type=int,
+        default=200,
+        help="number of log lines for --logs (default: 200)",
+    )
     return parser
 
 
@@ -80,16 +106,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not (args.deps or args.software or args.both or args.uninstall):
+    modes = (args.deps, args.software, args.both, args.uninstall, args.status, args.start, args.stop, args.logs)
+    if not any(modes):
         # Default: interactive wizard (tui handles the curses fallback).
         if args.dry_run:
-            parser.error("--dry-run requires a mode flag (--deps, --software, --both or --uninstall)")
+            parser.error(
+                "--dry-run requires a mode flag "
+                "(--deps, --software, --both, --uninstall, --status, --start, --stop or --logs)"
+            )
         return run_tui()
 
     from .actions import run_action
     from .runner import print_fail, print_ok
 
-    action = "deps" if args.deps else "software" if args.software else "both" if args.both else "uninstall"
+    action = (
+        "deps" if args.deps
+        else "software" if args.software
+        else "both" if args.both
+        else "uninstall" if args.uninstall
+        else "status" if args.status
+        else "start" if args.start
+        else "stop" if args.stop
+        else "logs"
+    )
 
     if action in ("deps", "both"):
         deps = [d for d in DEPENDENCIES if d.required]
@@ -110,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Database engine: {args.db}")
         if args.no_env:
             print(".env will not be written now; create it manually later.")
+    elif action in ("status", "start", "stop", "logs"):
+        print(f"Stack: {args.dir or 'default (%USERPROFILE%\\aetheris)'}  engine: {args.db}")
 
     steps = run_action(action, deps=deps, options=install_options, dry_run=args.dry_run, progress=print)
 
@@ -147,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
             print("Fix the reported failures above, then re-run the installer.")
         else:
             print("The Aetheris software stack is in place.")
+    elif action in ("status", "start", "stop", "logs"):
+        if not ok:
+            print("The stack command failed. Fix the reported error, then re-run.")
+        elif action == "status":
+            print("Stack status reported above.")
+        elif action == "logs":
+            print("Last log lines reported above.")
+        else:
+            print(f"The Aetheris stack was {'started' if action == 'start' else 'stopped'}.")
 
     return 0 if ok else 1
 

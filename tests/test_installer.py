@@ -170,6 +170,28 @@ class TestActions:
         assert run_action("software", dry_run=True)[0].name == "docker-ready"
         assert run_action("uninstall", dry_run=True)[0].name == "compose-down"
 
+    def test_run_action_management_dispatch_dry_run(self, capsys) -> None:
+        from aetheris_wininstaller.actions import stack_logs, stack_status, start_stack, stop_stack
+
+        assert stack_status(dry_run=True)[0].name == "stack-status"
+        assert start_stack(dry_run=True)[0].name == "stack-start"
+        assert stop_stack(dry_run=True)[0].name == "stack-stop"
+        assert stack_logs(dry_run=True)[0].name == "stack-logs"
+        captured = capsys.readouterr()
+        assert "docker compose" in captured.out
+        assert "--tail=200" in captured.out
+
+    def test_management_not_installed_is_a_clear_failure(self, tmp_path: Path) -> None:
+        # Without a compose file the management commands explain that the
+        # software stack must be installed first (real mode, not dry-run).
+        from aetheris_wininstaller.actions import start_stack
+
+        steps = start_stack(InstallOptions(base_dir=tmp_path))
+        assert len(steps) == 1
+        assert steps[0].name == "stack-start"
+        assert steps[0].result.ok is False
+        assert "not installed yet" in steps[0].result.output
+
     def test_run_action_both_chains_deps_and_software(self) -> None:
         steps = run_action("both", deps=list(DEPENDENCIES), dry_run=True)
         names = [s.name for s in steps]
@@ -251,3 +273,37 @@ class TestCliExitCodes:
         ]
         monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
         assert cli.main(["--deps"]) == 1
+
+    def test_management_failure_is_fatal(self, monkeypatch, capsys) -> None:
+        from aetheris_wininstaller import actions, cli
+
+        fake_steps = [
+            ActionStep("stack-start", CommandResult(ok=False, returncode=1, output="docker failed")),
+        ]
+        monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
+        assert cli.main(["--start"]) == 1
+        assert "The stack command failed" in capsys.readouterr().out
+
+    def test_management_success_exits_zero(self, monkeypatch, capsys) -> None:
+        from aetheris_wininstaller import actions, cli
+
+        fake_steps = [
+            ActionStep("stack-logs", CommandResult(ok=True, returncode=0, output="log line")),
+        ]
+        monkeypatch.setattr(actions, "run_action", lambda *args, **kwargs: fake_steps)
+        assert cli.main(["--logs", "--tail", "5"]) == 0
+        assert "Last log lines reported above." in capsys.readouterr().out
+
+    def test_status_uses_detected_sqlite_compose(self, capsys, tmp_path: Path) -> None:
+        from aetheris_wininstaller import cli
+        from aetheris_wininstaller.actions import run_action as real_run
+
+        app_dir = tmp_path / "aetheris-app"
+        app_dir.mkdir(parents=True)
+        (app_dir / "docker-compose.sqlite.yml").write_text("services: {}\n", encoding="utf-8")
+        (app_dir / ".env").write_text("AETHERIS_DB_MODE=sqlite\n", encoding="utf-8")
+
+        # --status --dry-run must resolve the sqlite compose file from the .env.
+        assert cli.main(["--status", "--dry-run", "--dir", str(tmp_path)]) == 0
+        captured = capsys.readouterr()
+        assert "docker-compose.sqlite.yml" in captured.out

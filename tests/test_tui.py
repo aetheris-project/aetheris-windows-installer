@@ -176,6 +176,58 @@ class TestTuiState:
         assert not state.running
         assert state.finished, "expected at least one executed step"
 
+    def test_pick_status_starts_run_immediately(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "status")
+        state.pick_action(index)
+        assert state.screen_name == "run"
+        assert state.pending_action == "status"
+        state.wait_finished()
+
+    def test_pick_start_goes_to_confirm(self) -> None:
+        from aetheris_wininstaller import tui
+
+        state = TuiState()
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "start")
+        state.pick_action(index)
+        assert state.screen_name == "confirm"
+        assert state.pending_action == "start"
+
+    def test_pick_logs_opens_console_and_esc_returns(self, monkeypatch, tmp_path: Path) -> None:
+        from aetheris_wininstaller import tui
+
+        def fake_stream(*args, **kwargs):
+            from aetheris_wininstaller.runner import CommandResult
+
+            on_line = kwargs.get("on_line")
+            if on_line:
+                on_line("web_1  | listening on :3000")
+            stop_event = kwargs.get("stop_event")
+            if stop_event:
+                stop_event.set()  # end the follow immediately
+            return CommandResult(ok=True, returncode=0, output="ok")
+
+        monkeypatch.setattr(tui, "stream_command", fake_stream)
+
+        # A compose file must exist so the follow worker reaches the stream.
+        app_dir = tmp_path / "aetheris-app"
+        app_dir.mkdir(parents=True)
+        (app_dir / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+        state = TuiState()
+        state.dir_input = str(tmp_path)
+        index = next(i for i, (action, _) in enumerate(tui.ACTIONS) if action == "logs")
+        state.pick_action(index)
+        assert state.screen_name == "logs"
+        state.wait_finished()
+        assert not state.logs_following
+        assert any("listening on :3000" in line for line in state.log_lines)
+
+        state.handle(27)  # Esc: back to the menu
+        assert state.screen_name == "main"
+
     def test_utf8_console_enabler_is_best_effort(self, monkeypatch) -> None:
         """enable_utf8_console never raises, even on non-Windows hosts."""
         from aetheris_wininstaller import tui
@@ -221,5 +273,22 @@ def test_draw_falls_back_to_ascii_frame() -> None:
     # content still draws - the screen is not blank.
     assert state._unicode_borders is False
     assert any("AETHERIS" in text for _, _, text in screen.buffer)
-    assert any("Choose an action" in text for _, _, text in screen.buffer)
+    assert any("Setup" in text for _, _, text in screen.buffer)
+    assert any("Manage the stack" in text for _, _, text in screen.buffer)
     assert any("Install dependencies only" in text for _, _, text in screen.buffer)
+    assert any("Console - live stack logs" in text for _, _, text in screen.buffer)
+
+
+def test_logs_screen_draws_console_header() -> None:
+    """The live console renders its header and streamed lines."""
+    from aetheris_wininstaller import tui
+
+    state = TuiState()
+    state.screen_name = "logs"
+    state.logs_following = False
+    state.log_lines = ["web_1  | ready", "backend_1  | uvicorn running"]
+    screen = _RejectUnicodeScreen()
+    state.draw(screen)
+    assert any("Console - live stack logs" in text for _, _, text in screen.buffer)
+    assert any("ready" in text for _, _, text in screen.buffer)
+    assert any("uvicorn running" in text for _, _, text in screen.buffer)

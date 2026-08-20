@@ -148,6 +148,169 @@ def install_software(
     return steps
 
 
+def _resolve_compose(paths: InstallPaths, options: InstallOptions) -> Path:
+    """Pick the compose file for management commands.
+
+    Prefers the engine recorded in the installed .env (the installer writes
+    AETHERIS_DB_MODE) so `start`/`stop`/`logs` always target the compose
+    file the stack was actually brought up with.
+    """
+    db_mode = detect_db_mode(paths.env_file) or options.db_mode
+    return paths.compose_for(db_mode)
+
+
+def stack_status(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Show the running state of every stack container (docker compose ps)."""
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
+    compose_file = _resolve_compose(paths, options)
+    if not compose_file.exists() and not dry_run:
+        return [
+            ActionStep(
+                name="stack-status",
+                result=CommandResult(
+                    ok=False,
+                    returncode=-1,
+                    output=(
+                        "Aetheris is not installed yet: no compose file found at "
+                        f"{compose_file}. Install the software stack first."
+                    ),
+                ),
+            )
+        ]
+    if progress:
+        progress("Querying stack status...")
+    ps = run_command(
+        ["docker", "compose", "-f", str(compose_file), "ps"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    return [ActionStep(name="stack-status", result=ps)]
+
+
+def start_stack(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Bring the Aetheris stack up (docker compose up -d)."""
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
+    compose_file = _resolve_compose(paths, options)
+    if not compose_file.exists() and not dry_run:
+        return [
+            ActionStep(
+                name="stack-start",
+                result=CommandResult(
+                    ok=False,
+                    returncode=-1,
+                    output=(
+                        "Aetheris is not installed yet: no compose file found at "
+                        f"{compose_file}. Install the software stack first."
+                    ),
+                ),
+            )
+        ]
+    if progress:
+        progress("Starting the Aetheris stack...")
+    up = run_command(
+        ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    return [ActionStep(name="stack-start", result=up)]
+
+
+def stop_stack(
+    options: InstallOptions | None = None,
+    *,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Stop every stack container (docker compose stop).
+
+    Containers and volumes are kept, so the next `start` is fast.
+    """
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
+    compose_file = _resolve_compose(paths, options)
+    if not compose_file.exists() and not dry_run:
+        return [
+            ActionStep(
+                name="stack-stop",
+                result=CommandResult(
+                    ok=False,
+                    returncode=-1,
+                    output=(
+                        "Aetheris is not installed yet: no compose file found at "
+                        f"{compose_file}. Install the software stack first."
+                    ),
+                ),
+            )
+        ]
+    if progress:
+        progress("Stopping the Aetheris stack...")
+    stop = run_command(
+        ["docker", "compose", "-f", str(compose_file), "stop"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    return [ActionStep(name="stack-stop", result=stop)]
+
+
+def stack_logs(
+    options: InstallOptions | None = None,
+    *,
+    tail: int = 200,
+    dry_run: bool = False,
+    quiet: bool = False,
+    progress=None,
+) -> list[ActionStep]:
+    """Print the last `tail` lines of the whole stack (one-shot).
+
+    The TUI live console uses :func:`runner.stream_command` with `-f`
+    instead; this non-interactive variant powers the --logs CLI flag.
+    """
+    options = options or InstallOptions()
+    paths = InstallPaths.default(options.resolved_base())
+    compose_file = _resolve_compose(paths, options)
+    if not compose_file.exists() and not dry_run:
+        return [
+            ActionStep(
+                name="stack-logs",
+                result=CommandResult(
+                    ok=False,
+                    returncode=-1,
+                    output=(
+                        "Aetheris is not installed yet: no compose file found at "
+                        f"{compose_file}. Install the software stack first."
+                    ),
+                ),
+            )
+        ]
+    if progress:
+        progress(f"Fetching the last {tail} log lines...")
+    logs = run_command(
+        ["docker", "compose", "-f", str(compose_file), "logs", f"--tail={tail}", "--timestamps"],
+        cwd=str(paths.app),
+        dry_run=dry_run,
+        quiet=quiet,
+    )
+    return [ActionStep(name="stack-logs", result=logs)]
+
+
 def uninstall_software(
     options: InstallOptions | None = None,
     *,
@@ -231,4 +394,12 @@ def run_action(
         return dependency_steps + install_software(options, dry_run=dry_run, quiet=quiet, progress=progress)
     if action == "uninstall":
         return uninstall_software(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "status":
+        return stack_status(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "start":
+        return start_stack(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "stop":
+        return stop_stack(options, dry_run=dry_run, quiet=quiet, progress=progress)
+    if action == "logs":
+        return stack_logs(options, dry_run=dry_run, quiet=quiet, progress=progress)
     raise ValueError(f"unknown action: {action}")

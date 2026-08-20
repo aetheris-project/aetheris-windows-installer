@@ -9,7 +9,8 @@ Keyboard model:
     Ctrl+C ............. exit
 
 Screens:
-    main    - choose an action (deps, software, both, uninstall, exit)
+    main    - choose an action (setup: deps/software/both/uninstall,
+              manage: status/start/stop/logs, exit)
     deps    - checkbox list of dependencies (only for deps/both)
     dir     - type the target directory for the project (software/both)
     env     - write .env now or later (software/both)
@@ -17,6 +18,7 @@ Screens:
     confirm - summary before executing
     run     - live progress while actions execute
     done    - final result with the next steps
+    logs    - live console: streams `docker compose logs -f` in real time
 
 Robustness: every element is drawn through a safe helper, so a single
 character the terminal cannot render (for example box-drawing glyphs on a
@@ -41,7 +43,8 @@ from .options import (
     ENV_TIMING_NOW,
     InstallOptions,
 )
-from .paths import home_dir
+from .paths import InstallPaths, detect_db_mode, home_dir
+from .runner import stream_command
 
 try:
     import curses
@@ -56,11 +59,21 @@ ACTIONS = [
     ("software", "Install Aetheris software only (Docker stack)"),
     ("both", "Install dependencies and software"),
     ("uninstall", "Uninstall Aetheris (remove stack and app directory)"),
+    ("status", "Stack status (docker compose ps)"),
+    ("start", "Start the Aetheris stack"),
+    ("stop", "Stop the Aetheris stack (containers stay)"),
+    ("logs", "Console - live stack logs (follow)"),
     ("exit", "Exit"),
 ]
 
+# First index of the management section (used to draw a section header).
+MANAGE_START = 4
+
 DEPS_ACTIONS = {"deps", "both"}
 OPTIONS_ACTIONS = {"software", "both"}
+RUN_IMMEDIATE_ACTIONS = {"status"}
+CONFIRM_ACTIONS = {"start", "stop"}
+MANAGE_ACTIONS = {"status", "start", "stop", "logs"}
 
 ENV_TIMING_OPTIONS = [
     (ENV_TIMING_NOW, "Create .env now (recommended)"),
@@ -133,7 +146,11 @@ class TuiState:
         self.finished: list[tuple[str, bool]] = []
         self.final_message = ""
         self.running = False
+        self.logs_following = False
+        self.log_lines: list[str] = []
+        self._stop_follow_event: threading.Event | None = None
         self._worker: threading.Thread | None = None
+        self._log_worker: threading.Thread | None = None
         self._frame = 0
         self._colors = False
         self._unicode_borders = True
@@ -160,6 +177,13 @@ class TuiState:
         elif action in OPTIONS_ACTIONS:
             self.screen_name = "dir"
             self.option_cursor = 0
+        elif action in RUN_IMMEDIATE_ACTIONS:
+            # One-shot query: no confirmation needed, straight to the run
+            # screen (fast) so the ps output appears immediately.
+            self.confirm_and_run()
+        elif action == "logs":
+            self.screen_name = "logs"
+            self._start_follow()
         else:
             self.screen_name = "confirm"
 
@@ -182,6 +206,66 @@ class TuiState:
         """Block until the worker thread finishes (used by tests)."""
         if self._worker is not None:
             self._worker.join(timeout=timeout)
+        if self._log_worker is not None:
+            self._log_worker.join(timeout=timeout)
+
+    # ------------------------------------------------------------------
+    # Live logs console
+    # ------------------------------------------------------------------
+
+    def _start_follow(self) -> None:
+        """Begin streaming `docker compose logs -f` on a worker thread."""
+        self.log_lines = []
+        self.logs_following = True
+        self._stop_follow_event = threading.Event()
+        self._log_worker = threading.Thread(target=self._follow_worker, daemon=True)
+        self._log_worker.start()
+
+    def _stop_follow(self) -> None:
+        """Signal the follow worker to stop and wait for it to unwind."""
+        if self._stop_follow_event is not None:
+            self._stop_follow_event.set()
+        if self._log_worker is not None:
+            self._log_worker.join(timeout=2.0)
+        self._log_worker = None
+        self.logs_following = False
+
+    def _follow_worker(self) -> None:
+        """Stream log lines into a bounded buffer until stopped or the
+        command exits on its own."""
+        assert self._stop_follow_event is not None
+        try:
+            options = self.options()
+            paths = InstallPaths.default(options.resolved_base())
+            db_mode = detect_db_mode(paths.env_file) or options.db_mode
+            compose_file = paths.compose_for(db_mode)
+            if not compose_file.exists():
+                self._append_log(
+                    f"[aetheris] no compose file at {compose_file} - install the stack first."
+                )
+                self._append_log("[aetheris] press q to return to the menu.")
+                return
+            self._append_log(
+                f"[aetheris] following logs: docker compose -f {compose_file.name} logs -f"
+            )
+            result = stream_command(
+                ["docker", "compose", "-f", str(compose_file), "logs", "-f", "--tail=100", "--timestamps"],
+                cwd=str(paths.app),
+                on_line=self._append_log,
+                stop_event=self._stop_follow_event,
+            )
+            if not result.ok:
+                self._append_log(f"[aetheris] docker compose logs failed: {result.output}")
+            elif not self._stop_follow_event.is_set():
+                self._append_log("[aetheris] log stream ended - press q to return to the menu.")
+        finally:
+            self.logs_following = False
+
+    def _append_log(self, line: str) -> None:
+        """Append a log line, keeping the buffer bounded."""
+        self.log_lines.append(line)
+        if len(self.log_lines) > 400:
+            del self.log_lines[: len(self.log_lines) - 400]
 
     def _execute(self) -> None:
         assert self.pending_action is not None
@@ -327,6 +411,8 @@ class TuiState:
             self._draw_run(screen, height, width)
         elif self.screen_name == "done":
             self._draw_done(screen, height, width)
+        elif self.screen_name == "logs":
+            self._draw_logs(screen, height, width)
         screen.refresh()
 
     def _draw_minimal(self, screen, height: int, width: int) -> None:
@@ -340,9 +426,14 @@ class TuiState:
 
     def _draw_main(self, screen, height: int, width: int) -> None:
         row = 5
-        self._put(screen, row, 2, "Choose an action:", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Setup", width - 4, self._attr(bold=True, pair=PAIR_ACCENT))
         row += 1
         for index, (_, label) in enumerate(ACTIONS):
+            if index == MANAGE_START:
+                row += 1
+                self._put(screen, row, 2, "Manage the stack", width - 4,
+                          self._attr(bold=True, pair=PAIR_ACCENT))
+                row += 1
             selected = index == self.cursor
             cursor = ">" if selected else " "
             attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
@@ -439,6 +530,12 @@ class TuiState:
             db_label = dict(DB_OPTIONS)[self.db_mode]
             self._put(screen, row, 2, f"  Database: {db_label}", width - 4)
             row += 1
+        if action in MANAGE_ACTIONS:
+            options = self.options()
+            paths = InstallPaths.default(options.resolved_base())
+            db_mode = detect_db_mode(paths.env_file) or options.db_mode
+            self._put(screen, row, 2, f"  Compose: {paths.compose_for(db_mode).name}", width - 4)
+            row += 1
         row += 1
         self._put(screen, row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
         self._footer(screen, height, width, "Enter: start   Esc/q: back to the main menu")
@@ -452,8 +549,10 @@ class TuiState:
                   self._attr(bold=True, pair=PAIR_ACCENT if self.running else None))
 
         row = 7
+        status_mode = action == "status"
         for line in self.progress_lines[- (height - 12):]:
-            self._put(screen, row, 2, line[: width - 4], width - 4, self._attr(dim=True))
+            attr = self._status_attr(line) if status_mode else self._attr(dim=True)
+            self._put(screen, row, 2, line[: width - 4], width - 4, attr)
             row += 1
 
         if self.finished:
@@ -469,6 +568,56 @@ class TuiState:
             row += 1
             self._put(screen, row, 2, self.final_message, width - 4,
                       self._attr(bold=True, pair=PAIR_ACCENT if self.final_message.startswith("All") else PAIR_ERROR))
+
+    def _status_attr(self, line: str) -> int:
+        """Color a docker compose ps line by container state.
+
+        Up/running -> green, Exited/exited -> red, Restarting -> yellow,
+        headers and empty lines stay dim.
+        """
+        lowered = line.lower()
+        if "restarting" in lowered or "starting" in lowered:
+            return self._attr(bold=True, pair=PAIR_WARN)
+        if "up" in lowered or "running" in lowered:
+            return self._attr(bold=True, pair=PAIR_ACCENT)
+        if "exited" in lowered or "dead" in lowered:
+            return self._attr(bold=True, pair=PAIR_ERROR)
+        return self._attr(dim=True)
+
+    def _draw_logs(self, screen, height: int, width: int) -> None:
+        """Live console: streamed `docker compose logs -f` output."""
+        spinner = SPINNER[self._frame % len(SPINNER)]
+        status = "following" if self.logs_following else "ended"
+        self._put(screen, 5, 2, f"{spinner if self.logs_following else ' '} Console - live stack logs ({status})",
+                  width - 4, self._attr(bold=True, pair=PAIR_ACCENT if self.logs_following else PAIR_WARN))
+        self._hline(screen, 6, width, "├" if self._unicode_borders else "+",
+                    "┤" if self._unicode_borders else "+")
+
+        row = 7
+        max_rows = height - 10
+        for line in self.log_lines[-max_rows:]:
+            self._draw_log_line(screen, row, width, line)
+            row += 1
+
+        if self.logs_following:
+            hint = "q/Esc: stop following and return to the menu"
+        else:
+            hint = "q/Esc: return to the menu"
+        self._footer(screen, height, width, hint)
+
+    def _draw_log_line(self, screen, y: int, width: int, line: str) -> None:
+        """Draw one log line, colorizing the `<service>  |` prefix."""
+        text = line[: width - 4]
+        if " | " in text:
+            prefix, rest = text.split(" | ", 1)
+            prefix_width = min(len(prefix) + 3, width - 4)
+            self._put(screen, y, 2, prefix + " | ", prefix_width,
+                      self._attr(bold=True, pair=PAIR_ACCENT))
+            rest_x = 2 + prefix_width
+            self._put(screen, y, rest_x, rest, max(width - 4 - prefix_width, 1),
+                      self._attr(dim=True))
+        else:
+            self._put(screen, y, 2, text, width - 4, self._attr(dim=True))
 
     def _draw_done(self, screen, height: int, width: int) -> None:
         row = 5
@@ -499,6 +648,12 @@ class TuiState:
         enter_keys = (ord("\n"), ord("\r"), KEY_ENTER)
         back_keys = (ord("q"), ord("Q"), 27)  # q and Esc
         backspace_keys = (127, 8, KEY_BACKSPACE)
+
+        if self.screen_name == "logs":
+            if key in back_keys:
+                self._stop_follow()
+                self.screen_name = "main"
+            return
 
         if self.screen_name == "main":
             if key in (KEY_UP, ord("k")):
@@ -582,17 +737,26 @@ class TuiState:
         self._setup_colors(screen)
         while True:
             self.draw(screen)
-            if self.running:
-                # Non-blocking while the worker runs: redraw for the spinner.
+            if self.running or self.logs_following:
+                # Non-blocking while a worker runs: redraw for the spinner and
+                # streamed log lines. Only the logs console accepts keys now.
                 screen.timeout(150)
                 key = screen.getch()
-                if key == -1:
+                if key != -1 and self.screen_name == "logs":
+                    self.handle(key)
+                else:
                     self._frame += 1
-                    continue
                 continue
             if self.screen_name == "run":
                 # Worker finished: move to the final summary screen.
                 self.screen_name = "done"
+                continue
+            if self.screen_name == "logs":
+                # The follow ended on its own: keep showing the buffer until
+                # the user presses a key to return to the menu.
+                screen.timeout(-1)
+                key = screen.getch()
+                self.handle(key)
                 continue
             screen.timeout(-1)
             key = screen.getch()
@@ -639,6 +803,12 @@ def run_prompt_fallback() -> int:
             base_dir=Path(input_text(f"Target directory ({install_options.resolved_base()}): ").strip() or install_options.resolved_base()),
             env_timing=select("When should the .env be written?", [label for _, label in ENV_TIMING_OPTIONS]),
             db_mode=select("Which database engine?", [label for _, label in DB_OPTIONS]),
+        )
+    elif action in MANAGE_ACTIONS:
+        base = input_text(f"Project directory ({install_options.resolved_base()}): ").strip()
+        install_options = InstallOptions(
+            base_dir=Path(base) if base else None,
+            db_mode=select("Which database engine is installed?", [label for _, label in DB_OPTIONS]),
         )
 
     print()
