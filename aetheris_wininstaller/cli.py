@@ -115,10 +115,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # The Docker engine must be running before the stack can start; right after a
     # fresh Docker Desktop install that only happens once the user starts it and
-    # logs in. In non-interactive mode those environment-dependent steps are
-    # best-effort: the run completes successfully and prints guidance instead of
-    # failing (the interactive TUI still surfaces failures explicitly).
-    best_effort = {"docker-ready", "compose-up"}
+    # logs in. In non-interactive mode those environment-dependent steps (and the
+    # repo fetch) are best-effort: the run completes successfully and prints
+    # guidance instead of failing (the interactive TUI still surfaces failures
+    # explicitly).
+    best_effort = {"docker-ready", "clone-app", "compose-up"}
 
     ok = True
     environment_pending = False
