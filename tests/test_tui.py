@@ -172,5 +172,6 @@ class TestTuiState:
         assert state.screen_name == "confirm"
         state.confirm_and_run()
         assert state.screen_name == "run"
+        state.wait_finished()
         assert not state.running
         assert state.finished, "expected at least one executed step"

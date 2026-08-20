@@ -8,8 +8,8 @@ PrivacyUrl: https://another-horizon.eu/privacy
 Author: Leo-Galli
 PackageName: Aetheris
 PackageUrl: https://github.com/aetheris-project/aetheris-app
-License: Aetheris License v1.0
-LicenseUrl: https://raw.githubusercontent.com/aetheris-project/aetheris-windows-installer/main/LICENSE
+License: AGPL-3.0
+LicenseUrl: https://raw.githubusercontent.com/aetheris-project/aetheris-windows-installer/main/LICENSE.md
 ShortDescription: Interactive Windows installer for the Aetheris self-hosted cloud control plane
 Description: |
   Aetheris is a self-hosted cloud management platform with billing, virtualization

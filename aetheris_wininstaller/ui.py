@@ -7,12 +7,32 @@ No emoji, no colored blocks.
 
 from __future__ import annotations
 
+TITLE = "AETHERIS Windows Installer"
+SUBTITLE = "Control plane setup on Windows - Docker based"
 
-def select(prompt: str, options: list[str], index: int = 0) -> int:
-    print(prompt)
+
+def _rule(width: int = 60) -> str:
+    return "-" * width
+
+
+def _header() -> None:
+    print()
+    print(f"  {TITLE}")
+    print(f"  {SUBTITLE}")
+    print(f"  {_rule()}")
+
+
+def _print_options(options: list[str], index: int) -> None:
     for position, option in enumerate(options):
         marker = ">" if position == index else " "
         print(f" {marker} {position + 1}. {option}")
+
+
+def select(prompt: str, options: list[str], index: int = 0) -> int:
+    _header()
+    print(f"  {prompt}")
+    _print_options(options, index)
+    print(f"  {_rule()}")
     while True:
         raw = input(f"Select 1-{len(options)} (Enter keeps {index + 1}): ").strip()
         if raw == "":
@@ -24,11 +44,13 @@ def select(prompt: str, options: list[str], index: int = 0) -> int:
 
 def checkbox(prompt: str, options: list[str], selected: set[int]) -> set[int]:
     """Toggle a subset of options. Returns the selected indices."""
-    print(prompt)
+    _header()
+    print(f"  {prompt}")
     while True:
         for position, option in enumerate(options):
             marker = "[x]" if position in selected else "[ ]"
             print(f" {marker} {position + 1}. {option}")
+        print(f"  {_rule()}")
         raw = input("Toggle a number (Enter to continue): ").strip()
         if raw == "":
             return selected

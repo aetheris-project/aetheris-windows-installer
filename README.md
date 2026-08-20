@@ -6,7 +6,7 @@ The platform runs as a Docker stack (web, worker, backend, PostgreSQL, Redis). T
 
 ## Features
 
-- Interactive TUI wizard with arrow-key navigation, archinstall-style (no emoji)
+- Interactive TUI wizard with arrow-key navigation, box-drawing frame, brand accent colors and a live spinner (no emoji)
 - Dependency management through winget (Docker Desktop, Git for Windows, Node.js LTS, Python 3.12)
 - Software install: clones `aetheris-app` and runs `docker compose up -d --build`
 - **Choose the target directory** for the project during the wizard
@@ -120,4 +120,4 @@ python tools/build_exe.py   # produces dist\aetheris-windows-installer.exe
 
 ## License
 
-Aetheris is licensed under the [Aetheris License v1.0](LICENSE): source-available, non-commercial, with attribution required. You may use, study, modify and share it for your own purposes, but the core, the Aetheris name and the author's credit may not be removed, and the software may not be sold without written permission.
+Aetheris is licensed under the [GNU Affero General Public License v3.0](LICENSE.md) (AGPL-3.0). You may use, study, modify and redistribute it for any purpose, provided that any distributed or network-served modified version keeps this license, preserves the copyright notice of the original author (Leonardo Galli / Leo-Galli) and releases its source code under AGPL-3.0. The Aetheris core and the author's credit may not be removed.

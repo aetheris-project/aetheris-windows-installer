@@ -3,7 +3,7 @@ PackageVersion: 1.0.0
 PackageLocale: it-IT
 Publisher: Leo-Galli / Aetheris Project
 PackageName: Aetheris
-License: Aetheris License v1.0
+License: AGPL-3.0
 ShortDescription: Installer interattivo per Windows del pannello di controllo cloud self-hosted Aetheris
 Description: |
   Aetheris e una piattaforma self-hosted di gestione cloud con billing, adapter

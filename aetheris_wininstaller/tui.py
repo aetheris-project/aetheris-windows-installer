@@ -20,6 +20,7 @@ Screens:
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from .actions import run_action
@@ -62,6 +63,22 @@ DB_OPTIONS = [
     (DB_SQLITE, "SQLite - local .db file (recommended for tests)"),
 ]
 
+# Safe key constants that work even when the curses module is unavailable
+# (the tests import this module on machines without windows-curses).
+KEY_UP = getattr(curses, "KEY_UP", 259) if curses else 259
+KEY_DOWN = getattr(curses, "KEY_DOWN", 258) if curses else 258
+KEY_ENTER = getattr(curses, "KEY_ENTER", 10) if curses else 10
+KEY_BACKSPACE = getattr(curses, "KEY_BACKSPACE", 263) if curses else 263
+
+# Color pairs (indexes into curses.init_pair).
+PAIR_ACCENT = 1   # green on default (brand emerald)
+PAIR_SELECTED = 2  # black on green (inverse accent)
+PAIR_ERROR = 3    # red on default
+PAIR_WARN = 4     # yellow on default
+PAIR_DIM = 5      # white on default (dimmed)
+
+SPINNER = ["|", "/", "-", "\\"]
+
 
 class TuiState:
     def __init__(self) -> None:
@@ -77,9 +94,12 @@ class TuiState:
         self.db_mode = DB_POSTGRES
         self.pending_action: str | None = None
         self.progress_lines: list[str] = []
-        self.running = False
         self.finished: list[tuple[str, bool]] = []
         self.final_message = ""
+        self.running = False
+        self._worker: threading.Thread | None = None
+        self._frame = 0
+        self._colors = False
 
     # ------------------------------------------------------------------
     # Options
@@ -107,32 +127,81 @@ class TuiState:
             self.screen_name = "confirm"
 
     def confirm_and_run(self) -> None:
+        """Start the chosen action on a worker thread and show live progress.
+
+        The worker keeps the curses loop free to redraw, so the run screen
+        animates a spinner and streams output lines while winget/docker work.
+        """
         assert self.pending_action is not None
-        deps = [DEPENDENCIES[i] for i in sorted(self.selected_deps)]
         self.screen_name = "run"
         self.progress_lines = []
         self.finished = []
+        self.final_message = ""
         self.running = True
+        self._worker = threading.Thread(target=self._execute, daemon=True)
+        self._worker.start()
 
-        steps = run_action(
-            self.pending_action,
-            deps=deps,
-            options=self.options(),
-            quiet=True,
-            progress=self.progress_lines.append,
-        )
-        self.finished = [(step.name, step.result.ok) for step in steps]
-        # Show the captured output of the last few lines per step.
-        for step in steps:
-            for line in step.result.lines[-3:]:
-                self.progress_lines.append(f"    {line}")
-        all_ok = all(ok for _, ok in self.finished)
-        self.final_message = (
-            "All steps completed successfully."
-            if all_ok
-            else "Some steps failed. Review the output above."
-        )
-        self.running = False
+    def wait_finished(self, timeout: float = 10.0) -> None:
+        """Block until the worker thread finishes (used by tests)."""
+        if self._worker is not None:
+            self._worker.join(timeout=timeout)
+
+    def _execute(self) -> None:
+        assert self.pending_action is not None
+        deps = [DEPENDENCIES[i] for i in sorted(self.selected_deps)]
+        try:
+            steps = run_action(
+                self.pending_action,
+                deps=deps,
+                options=self.options(),
+                quiet=True,
+                progress=self.progress_lines.append,
+            )
+            self.finished = [(step.name, step.result.ok) for step in steps]
+            # Show the captured output of the last few lines per step.
+            for step in steps:
+                for line in step.result.lines[-3:]:
+                    self.progress_lines.append(f"    {line}")
+            all_ok = all(ok for _, ok in self.finished)
+            self.final_message = (
+                "All steps completed successfully."
+                if all_ok
+                else "Some steps failed. Review the output above."
+            )
+        finally:
+            self.running = False
+
+    # ------------------------------------------------------------------
+    # Colors
+    # ------------------------------------------------------------------
+
+    def _setup_colors(self, screen) -> None:
+        """Initialize color pairs; falls back to monochrome attributes."""
+        self._colors = False
+        try:
+            if curses is not None and curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(PAIR_ACCENT, curses.COLOR_GREEN, -1)
+                curses.init_pair(PAIR_SELECTED, curses.COLOR_BLACK, curses.COLOR_GREEN)
+                curses.init_pair(PAIR_ERROR, curses.COLOR_RED, -1)
+                curses.init_pair(PAIR_WARN, curses.COLOR_YELLOW, -1)
+                curses.init_pair(PAIR_DIM, curses.COLOR_WHITE, -1)
+                self._colors = True
+        except curses.error:  # pragma: no cover - depends on the terminal
+            self._colors = False
+
+    def _attr(self, base: int = curses.A_NORMAL, *, pair: int | None = None, bold: bool = False, dim: bool = False, reverse: bool = False) -> int:
+        attr = base
+        if self._colors and pair is not None:
+            attr |= curses.color_pair(pair)
+        if bold:
+            attr |= curses.A_BOLD
+        if dim:
+            attr |= curses.A_DIM
+        if reverse:
+            attr |= curses.A_REVERSE
+        return attr
 
     # ------------------------------------------------------------------
     # Drawing
@@ -141,100 +210,143 @@ class TuiState:
     def draw(self, screen) -> None:
         screen.erase()
         height, width = screen.getmaxyx()
+        if height < 8 or width < 34:
+            self._draw_minimal(screen, height, width)
+            screen.refresh()
+            return
         try:
-            screen.addnstr(1, 2, TITLE, width - 4, curses.A_BOLD)
-            screen.addnstr(2, 2, SUBTITLE, width - 4, curses.A_DIM)
-        except curses.error:
-            pass
-        screen.hline(3, 1, "-", min(width - 2, 60))
-        try:
+            self._draw_frame(screen, height, width)
             if self.screen_name == "main":
-                self._draw_main(screen, width)
+                self._draw_main(screen, height, width)
             elif self.screen_name == "deps":
-                self._draw_deps(screen, width)
+                self._draw_deps(screen, height, width)
             elif self.screen_name == "dir":
-                self._draw_dir(screen, width)
+                self._draw_dir(screen, height, width)
             elif self.screen_name == "env":
-                self._draw_env(screen, width)
+                self._draw_env(screen, height, width)
             elif self.screen_name == "db":
-                self._draw_db(screen, width)
+                self._draw_db(screen, height, width)
             elif self.screen_name == "confirm":
-                self._draw_confirm(screen, width)
+                self._draw_confirm(screen, height, width)
             elif self.screen_name == "run":
-                self._draw_run(screen, width)
+                self._draw_run(screen, height, width)
         except curses.error:
             pass
         screen.refresh()
 
-    def _draw_main(self, screen, width: int) -> None:
+    def _draw_minimal(self, screen, height: int, width: int) -> None:
+        """Last-resort layout for very small terminals."""
+        try:
+            screen.addnstr(0, 0, TITLE, width, curses.A_BOLD)
+            if self.screen_name == "main":
+                for index, (_, label) in enumerate(ACTIONS):
+                    cursor = ">" if index == self.cursor else " "
+                    attr = self._attr(reverse=True) if index == self.cursor else curses.A_NORMAL
+                    screen.addnstr(index + 2, 0, f"{cursor} {label}", width, attr)
+        except curses.error:
+            pass
+
+    def _hline(self, screen, y: int, width: int, left: str, right: str, fill: str = "─") -> None:
+        screen.addnstr(y, 0, left + fill * (width - 2) + right, width)
+
+    def _draw_frame(self, screen, height: int, width: int) -> None:
+        """Outer frame with the brand title embedded in the top border."""
+        brand = " AETHERIS "
+        inner = width - 2
+        pad = inner - len(brand)
+        left_pad = max(pad // 2, 0)
+        right_pad = max(pad - left_pad, 0)
+        screen.addnstr(0, 0, "┌" + "─" * left_pad + brand + "─" * right_pad + "┐", width)
+        screen.addnstr(1, 1, TITLE, width - 2, self._attr(bold=True, pair=PAIR_ACCENT))
+        screen.addnstr(2, 1, SUBTITLE, width - 2, self._attr(dim=True, pair=PAIR_DIM))
+        self._hline(screen, 3, width, "├", "┤")
+        self._hline(screen, height - 3, width, "├", "┤")
+        screen.addnstr(height - 1, 0, "└" + "─" * (width - 2) + "┘", width)
+
+    def _footer(self, screen, height: int, width: int, hints: str) -> None:
+        screen.addnstr(height - 2, 1, " " + hints, width - 2, self._attr(reverse=True))
+
+    def _draw_main(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Choose an action:", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "Choose an action:", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(ACTIONS):
-            cursor = ">" if index == self.cursor else " "
-            attr = curses.A_REVERSE if index == self.cursor else curses.A_NORMAL
+            selected = index == self.cursor
+            cursor = ">" if selected else " "
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
-        row += 1
-        screen.addnstr(row, 2, "Up/Down: move   Enter: select   q: quit", width - 4, curses.A_DIM)
+        self._footer(screen, height, width, "Up/Down or j/k: move   Enter: select   q: quit")
 
-    def _draw_deps(self, screen, width: int) -> None:
+    def _draw_deps(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Select dependencies to install:", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "Select dependencies to install:", width - 4, self._attr(bold=True))
         row += 1
         for index, dep in enumerate(DEPENDENCIES):
-            marker = "[x]" if index in self.selected_deps else "[ ]"
-            cursor = ">" if index == self.dep_cursor else " "
-            attr = curses.A_REVERSE if index == self.dep_cursor else curses.A_NORMAL
-            screen.addnstr(row, 2, f"{cursor} {marker} {dep.label}", width - 4, attr)
+            selected = index == self.dep_cursor
+            checked = index in self.selected_deps
+            marker = "[x]" if checked else "[ ]"
+            cursor = ">" if selected else " "
+            suffix = " (required)" if dep.required else ""
+            text = f"{cursor} {marker} {dep.label}{suffix}"
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
+            if not selected and checked:
+                attr = self._attr(pair=PAIR_ACCENT)
+            screen.addnstr(row, 2, text, width - 4, attr)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "Space: toggle   Enter: continue   Esc/q: back", width - 4, curses.A_DIM)
+        for index, dep in enumerate(DEPENDENCIES):
+            if dep.description:
+                hint = f"  {dep.description}"
+                screen.addnstr(row, 2, hint, width - 4, self._attr(dim=True))
+                row += 1
+        self._footer(screen, height, width, "Space: toggle   Enter: continue   Esc/q: back")
 
-    def _draw_dir(self, screen, width: int) -> None:
+    def _draw_dir(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Target directory for the project:", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "Target directory for the project:", width - 4, self._attr(bold=True))
         row += 2
         label = "Path: "
         screen.addnstr(row, 2, label, width - 4)
-        screen.addnstr(row, 2 + len(label), self.dir_input, width - 4 - len(label) - 2, curses.A_REVERSE)
+        screen.addnstr(row, 2 + len(label), self.dir_input, width - 4 - len(label) - 2, self._attr(pair=PAIR_ACCENT, reverse=True))
         row += 2
-        screen.addnstr(row, 2, "Type the path, Backspace to edit, Enter to continue", width - 4, curses.A_DIM)
-        row += 1
-        screen.addnstr(row, 2, "Esc: back", width - 4, curses.A_DIM)
+        screen.addnstr(row, 2, "Type the path, Backspace to edit, Enter to continue", width - 4, self._attr(dim=True))
+        self._footer(screen, height, width, "Type: edit path   Enter: continue   Esc/q: back")
 
-    def _draw_env(self, screen, width: int) -> None:
+    def _draw_env(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "When should the .env file be written?", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "When should the .env file be written?", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(ENV_TIMING_OPTIONS):
-            cursor = ">" if index == self.option_cursor else " "
-            attr = curses.A_REVERSE if index == self.option_cursor else curses.A_NORMAL
+            selected = index == self.option_cursor
+            cursor = ">" if selected else " "
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "Up/Down: move   Enter: continue   Esc/q: back", width - 4, curses.A_DIM)
+        screen.addnstr(row, 2, "Writing it now keeps the stack fully configured on first boot.", width - 4, self._attr(dim=True))
+        self._footer(screen, height, width, "Up/Down or j/k: move   Enter: continue   Esc/q: back")
 
-    def _draw_db(self, screen, width: int) -> None:
+    def _draw_db(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Which database engine should Aetheris use?", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "Which database engine should Aetheris use?", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(DB_OPTIONS):
-            cursor = ">" if index == self.option_cursor else " "
-            attr = curses.A_REVERSE if index == self.option_cursor else curses.A_NORMAL
+            selected = index == self.option_cursor
+            cursor = ">" if selected else " "
+            attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else curses.A_NORMAL
             screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "SQLite stores data in a local .db file - ideal for tests.", width - 4, curses.A_DIM)
-        row += 1
-        screen.addnstr(row, 2, "Up/Down: move   Enter: continue   Esc/q: back", width - 4, curses.A_DIM)
+        screen.addnstr(row, 2, "SQLite stores data in a local .db file - ideal for tests.", width - 4, self._attr(dim=True))
+        self._footer(screen, height, width, "Up/Down or j/k: move   Enter: continue   Esc/q: back")
 
-    def _draw_confirm(self, screen, width: int) -> None:
+    def _draw_confirm(self, screen, height: int, width: int) -> None:
         action = self.pending_action or "software"
         labels = dict(ACTIONS)
         title = labels.get(action, action)
         row = 5
-        screen.addnstr(row, 2, "Confirm:", width - 4, curses.A_BOLD)
+        screen.addnstr(row, 2, "Confirm your choices:", width - 4, self._attr(bold=True))
         row += 1
         screen.addnstr(row, 2, f"  Action: {title}", width - 4)
         row += 1
@@ -252,27 +364,33 @@ class TuiState:
             screen.addnstr(row, 2, f"  Database: {db_label}", width - 4)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "Enter: start   Esc/q: back", width - 4, curses.A_DIM)
+        screen.addnstr(row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
+        self._footer(screen, height, width, "Enter: start   Esc/q: back to the main menu")
 
-    def _draw_run(self, screen, width: int) -> None:
-        row = 5
+    def _draw_run(self, screen, height: int, width: int) -> None:
         action = self.pending_action or "software"
         labels = dict(ACTIONS)
-        screen.addnstr(row, 2, f"Running: {labels.get(action, action)}", width - 4, curses.A_BOLD)
-        row += 1
-        for line in self.progress_lines[-12:]:
-            screen.addnstr(row, 2, line[: width - 4], width - 4, curses.A_DIM)
+        spinner = SPINNER[self._frame % len(SPINNER)]
+        state = "Running" if self.running else "Finished"
+        screen.addnstr(5, 2, f"{spinner} {state}: {labels.get(action, action)}", width - 4, self._attr(bold=True, pair=PAIR_ACCENT if self.running else None))
+
+        row = 7
+        for line in self.progress_lines[- (height - 12):]:
+            screen.addnstr(row, 2, line[: width - 4], width - 4, self._attr(dim=True))
             row += 1
-        row += 1
-        for name, ok in self.finished:
-            status = "OK" if ok else "FAIL"
-            screen.addnstr(row, 2, f"  [{status}] {name}", width - 4)
+
+        if self.finished:
             row += 1
+            for name, ok in self.finished:
+                status = "OK" if ok else "FAIL"
+                pair = PAIR_ACCENT if ok else PAIR_ERROR
+                screen.addnstr(row, 2, f"  [{status}] {name}", width - 4, self._attr(pair=pair, bold=ok))
+                row += 1
+
         if not self.running:
             row += 1
-            screen.addnstr(row, 2, self.final_message, width - 4, curses.A_BOLD)
-            row += 1
-            screen.addnstr(row, 2, "Press any key to exit.", width - 4, curses.A_DIM)
+            screen.addnstr(row, 2, self.final_message, width - 4, self._attr(bold=True, pair=PAIR_ACCENT if self.final_message.startswith("All") else PAIR_ERROR))
+            self._footer(screen, height, width, "Press any key to exit.")
 
     # ------------------------------------------------------------------
     # Input
@@ -284,14 +402,14 @@ class TuiState:
                 raise SystemExit(0)
             return
 
-        enter_keys = (ord("\n"), ord("\r"), curses.KEY_ENTER) if curses else (10, 13)
+        enter_keys = (ord("\n"), ord("\r"), KEY_ENTER)
         back_keys = (ord("q"), ord("Q"), 27)  # q and Esc
-        backspace_keys = (127, 8, curses.KEY_BACKSPACE if curses else 263)
+        backspace_keys = (127, 8, KEY_BACKSPACE)
 
         if self.screen_name == "main":
-            if key in (curses.KEY_UP, ord("k")):
+            if key in (KEY_UP, ord("k")):
                 self.cursor = (self.cursor - 1) % len(ACTIONS)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (KEY_DOWN, ord("j")):
                 self.cursor = (self.cursor + 1) % len(ACTIONS)
             elif key in enter_keys:
                 self.pick_action(self.cursor)
@@ -299,9 +417,9 @@ class TuiState:
                 raise SystemExit(0)
 
         elif self.screen_name == "deps":
-            if key in (curses.KEY_UP, ord("k")):
+            if key in (KEY_UP, ord("k")):
                 self.dep_cursor = (self.dep_cursor - 1) % len(DEPENDENCIES)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (KEY_DOWN, ord("j")):
                 self.dep_cursor = (self.dep_cursor + 1) % len(DEPENDENCIES)
             elif key == ord(" "):
                 self._toggle_dep(self.dep_cursor)
@@ -323,9 +441,9 @@ class TuiState:
                 self.screen_name = "deps" if self.pending_action == "both" else "main"
 
         elif self.screen_name == "env":
-            if key in (curses.KEY_UP, ord("k")):
+            if key in (KEY_UP, ord("k")):
                 self.option_cursor = (self.option_cursor - 1) % len(ENV_TIMING_OPTIONS)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (KEY_DOWN, ord("j")):
                 self.option_cursor = (self.option_cursor + 1) % len(ENV_TIMING_OPTIONS)
             elif key in enter_keys:
                 self.env_timing = ENV_TIMING_OPTIONS[self.option_cursor][0]
@@ -335,9 +453,9 @@ class TuiState:
                 self.screen_name = "dir"
 
         elif self.screen_name == "db":
-            if key in (curses.KEY_UP, ord("k")):
+            if key in (KEY_UP, ord("k")):
                 self.option_cursor = (self.option_cursor - 1) % len(DB_OPTIONS)
-            elif key in (curses.KEY_DOWN, ord("j")):
+            elif key in (KEY_DOWN, ord("j")):
                 self.option_cursor = (self.option_cursor + 1) % len(DB_OPTIONS)
             elif key in enter_keys:
                 self.db_mode = DB_OPTIONS[self.option_cursor][0]
@@ -367,8 +485,20 @@ class TuiState:
 
     def run(self, screen) -> int:
         curses.curs_set(0)
+        self._setup_colors(screen)
         while True:
             self.draw(screen)
+            if self.running:
+                # Non-blocking while the worker runs: redraw for the spinner.
+                screen.timeout(150)
+                key = screen.getch()
+                if key == -1:
+                    self._frame += 1
+                    continue
+                if not self.running:
+                    raise SystemExit(0)
+                continue
+            screen.timeout(-1)
             key = screen.getch()
             self.handle(key)
 
