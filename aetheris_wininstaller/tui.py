@@ -16,13 +16,22 @@ Screens:
     db      - postgres or local sqlite .db file (software/both)
     confirm - summary before executing
     run     - live progress while actions execute
+    done    - final result with the next steps
+
+Robustness: every element is drawn through a safe helper, so a single
+character the terminal cannot render (for example box-drawing glyphs on a
+console with a legacy code page) degrades gracefully instead of blanking the
+whole screen. On Windows the console code page is switched to UTF-8 at
+startup, and if Unicode borders fail the frame falls back to plain ASCII.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
+from . import __version__
 from .actions import run_action
 from .deps import DEPENDENCIES, Dependency
 from .options import (
@@ -84,6 +93,28 @@ PAIR_DIM = 5      # white on default (dimmed)
 
 SPINNER = ["|", "/", "-", "\\"]
 
+NEXT_STEPS = [
+    "Open http://127.0.0.1:3000 in your browser",
+    "Backend API: http://127.0.0.1:8000/docs",
+    "Documentation: https://aetheris-docs.vercel.app",
+]
+
+
+def enable_utf8_console() -> None:
+    """Switch the Windows console to UTF-8 so Unicode borders render.
+
+    Best effort: failures are ignored, the TUI still works with ASCII.
+    """
+    if os.name != "nt":
+        return
+    try:  # pragma: no cover - Windows only
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:  # noqa: BLE001 - cosmetic, never fatal
+        pass
+
 
 class TuiState:
     def __init__(self) -> None:
@@ -105,6 +136,7 @@ class TuiState:
         self._worker: threading.Thread | None = None
         self._frame = 0
         self._colors = False
+        self._unicode_borders = True
 
     # ------------------------------------------------------------------
     # Options
@@ -209,6 +241,65 @@ class TuiState:
         return attr
 
     # ------------------------------------------------------------------
+    # Safe drawing primitives
+    # ------------------------------------------------------------------
+
+    def _put(self, screen, y: int, x: int, text: str, width: int, attr: int = A_NORMAL) -> bool:
+        """Draw one line safely.
+
+        Returns False if the terminal rejected the call (for example a glyph
+        that cannot be encoded); the caller can then fall back to ASCII.
+        Any exception while rendering a single line is contained here so one
+        bad glyph can never blank the whole screen.
+        """
+        try:
+            screen.addnstr(y, x, text, max(1, width), attr)
+            return True
+        except Exception:  # noqa: BLE001 - rendering must never crash the wizard
+            return False
+
+    def _borders(self, width: int) -> tuple[str, str, str]:
+        if self._unicode_borders:
+            return ("┌", "┐", "└")
+        return ("+", "+", "+")
+
+    def _hline(self, screen, y: int, width: int, left: str, right: str, fill: str = "─") -> None:
+        self._put(screen, y, 0, left + fill * (width - 2) + right, width)
+
+    def _draw_frame(self, screen, height: int, width: int) -> None:
+        """Outer frame with the brand title embedded in the top border."""
+        tl, tr, bl = self._borders(width)
+        brand = " AETHERIS "
+        inner = width - 2
+        pad = inner - len(brand)
+        left_pad = max(pad // 2, 0)
+        right_pad = max(pad - left_pad, 0)
+        top = f"{tl}{'─' * left_pad}{brand}{'─' * right_pad}{tr}"
+        bottom = f"{bl}{'─' * (width - 2)}{'┘' if self._unicode_borders else '+'}"
+
+        if not self._put(screen, 0, 0, top, width):
+            # Unicode glyphs are unsupported in this terminal: redraw ASCII.
+            self._unicode_borders = False
+            tl, tr, bl = self._borders(width)
+            top = f"{tl}{'-' * left_pad}{brand}{'-' * right_pad}{tr}"
+            bottom = f"{bl}{'-' * (width - 2)}{'+'}"
+            if not self._put(screen, 0, 0, top, width):
+                return
+        self._put(screen, 1, 1, TITLE, width - 2, self._attr(bold=True, pair=PAIR_ACCENT))
+        self._put(screen, 2, 1, SUBTITLE, width - 2, self._attr(dim=True, pair=PAIR_DIM))
+        version = f"v{__version__}"
+        self._put(screen, 2, max(1, width - len(version) - 2), version, len(version) + 2,
+                  self._attr(dim=True, pair=PAIR_DIM))
+        self._hline(screen, 3, width, "├" if self._unicode_borders else "+",
+                    "┤" if self._unicode_borders else "+")
+        self._hline(screen, height - 3, width, "├" if self._unicode_borders else "+",
+                    "┤" if self._unicode_borders else "+")
+        self._put(screen, height - 1, 0, bottom, width)
+
+    def _footer(self, screen, height: int, width: int, hints: str) -> None:
+        self._put(screen, height - 2, 1, " " + hints, width - 2, self._attr(reverse=True))
+
+    # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
 
@@ -219,73 +310,49 @@ class TuiState:
             self._draw_minimal(screen, height, width)
             screen.refresh()
             return
-        try:
-            self._draw_frame(screen, height, width)
-            if self.screen_name == "main":
-                self._draw_main(screen, height, width)
-            elif self.screen_name == "deps":
-                self._draw_deps(screen, height, width)
-            elif self.screen_name == "dir":
-                self._draw_dir(screen, height, width)
-            elif self.screen_name == "env":
-                self._draw_env(screen, height, width)
-            elif self.screen_name == "db":
-                self._draw_db(screen, height, width)
-            elif self.screen_name == "confirm":
-                self._draw_confirm(screen, height, width)
-            elif self.screen_name == "run":
-                self._draw_run(screen, height, width)
-        except curses.error:
-            pass
+        self._draw_frame(screen, height, width)
+        if self.screen_name == "main":
+            self._draw_main(screen, height, width)
+        elif self.screen_name == "deps":
+            self._draw_deps(screen, height, width)
+        elif self.screen_name == "dir":
+            self._draw_dir(screen, height, width)
+        elif self.screen_name == "env":
+            self._draw_env(screen, height, width)
+        elif self.screen_name == "db":
+            self._draw_db(screen, height, width)
+        elif self.screen_name == "confirm":
+            self._draw_confirm(screen, height, width)
+        elif self.screen_name == "run":
+            self._draw_run(screen, height, width)
+        elif self.screen_name == "done":
+            self._draw_done(screen, height, width)
         screen.refresh()
 
     def _draw_minimal(self, screen, height: int, width: int) -> None:
         """Last-resort layout for very small terminals."""
-        try:
-            screen.addnstr(0, 0, TITLE, width, A_BOLD)
-            if self.screen_name == "main":
-                for index, (_, label) in enumerate(ACTIONS):
-                    cursor = ">" if index == self.cursor else " "
-                    attr = self._attr(reverse=True) if index == self.cursor else A_NORMAL
-                    screen.addnstr(index + 2, 0, f"{cursor} {label}", width, attr)
-        except curses.error:
-            pass
-
-    def _hline(self, screen, y: int, width: int, left: str, right: str, fill: str = "─") -> None:
-        screen.addnstr(y, 0, left + fill * (width - 2) + right, width)
-
-    def _draw_frame(self, screen, height: int, width: int) -> None:
-        """Outer frame with the brand title embedded in the top border."""
-        brand = " AETHERIS "
-        inner = width - 2
-        pad = inner - len(brand)
-        left_pad = max(pad // 2, 0)
-        right_pad = max(pad - left_pad, 0)
-        screen.addnstr(0, 0, "┌" + "─" * left_pad + brand + "─" * right_pad + "┐", width)
-        screen.addnstr(1, 1, TITLE, width - 2, self._attr(bold=True, pair=PAIR_ACCENT))
-        screen.addnstr(2, 1, SUBTITLE, width - 2, self._attr(dim=True, pair=PAIR_DIM))
-        self._hline(screen, 3, width, "├", "┤")
-        self._hline(screen, height - 3, width, "├", "┤")
-        screen.addnstr(height - 1, 0, "└" + "─" * (width - 2) + "┘", width)
-
-    def _footer(self, screen, height: int, width: int, hints: str) -> None:
-        screen.addnstr(height - 2, 1, " " + hints, width - 2, self._attr(reverse=True))
+        self._put(screen, 0, 0, TITLE, width, A_BOLD)
+        if self.screen_name == "main":
+            for index, (_, label) in enumerate(ACTIONS):
+                cursor = ">" if index == self.cursor else " "
+                attr = self._attr(reverse=True) if index == self.cursor else A_NORMAL
+                self._put(screen, index + 2, 0, f"{cursor} {label}", width, attr)
 
     def _draw_main(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Choose an action:", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Choose an action:", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(ACTIONS):
             selected = index == self.cursor
             cursor = ">" if selected else " "
             attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
-            screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
+            self._put(screen, row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         self._footer(screen, height, width, "Up/Down or j/k: move   Enter: select   q: quit")
 
     def _draw_deps(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Select dependencies to install:", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Select dependencies to install:", width - 4, self._attr(bold=True))
         row += 1
         for index, dep in enumerate(DEPENDENCIES):
             selected = index == self.dep_cursor
@@ -297,53 +364,57 @@ class TuiState:
             attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
             if not selected and checked:
                 attr = self._attr(pair=PAIR_ACCENT)
-            screen.addnstr(row, 2, text, width - 4, attr)
+            self._put(screen, row, 2, text, width - 4, attr)
             row += 1
         row += 1
         for index, dep in enumerate(DEPENDENCIES):
             if dep.description:
                 hint = f"  {dep.description}"
-                screen.addnstr(row, 2, hint, width - 4, self._attr(dim=True))
+                self._put(screen, row, 2, hint, width - 4, self._attr(dim=True))
                 row += 1
         self._footer(screen, height, width, "Space: toggle   Enter: continue   Esc/q: back")
 
     def _draw_dir(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Target directory for the project:", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Target directory for the project:", width - 4, self._attr(bold=True))
         row += 2
         label = "Path: "
-        screen.addnstr(row, 2, label, width - 4)
-        screen.addnstr(row, 2 + len(label), self.dir_input, width - 4 - len(label) - 2, self._attr(pair=PAIR_ACCENT, reverse=True))
+        self._put(screen, row, 2, label, width - 4)
+        self._put(screen, row, 2 + len(label), self.dir_input, width - 4 - len(label) - 2,
+                  self._attr(pair=PAIR_ACCENT, reverse=True))
         row += 2
-        screen.addnstr(row, 2, "Type the path, Backspace to edit, Enter to continue", width - 4, self._attr(dim=True))
+        self._put(screen, row, 2, "Type the path, Backspace to edit, Enter to continue",
+                  width - 4, self._attr(dim=True))
         self._footer(screen, height, width, "Type: edit path   Enter: continue   Esc/q: back")
 
     def _draw_env(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "When should the .env file be written?", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "When should the .env file be written?", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(ENV_TIMING_OPTIONS):
             selected = index == self.option_cursor
             cursor = ">" if selected else " "
             attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
-            screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
+            self._put(screen, row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "Writing it now keeps the stack fully configured on first boot.", width - 4, self._attr(dim=True))
+        self._put(screen, row, 2, "Writing it now keeps the stack fully configured on first boot.",
+                  width - 4, self._attr(dim=True))
         self._footer(screen, height, width, "Up/Down or j/k: move   Enter: continue   Esc/q: back")
 
     def _draw_db(self, screen, height: int, width: int) -> None:
         row = 5
-        screen.addnstr(row, 2, "Which database engine should Aetheris use?", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Which database engine should Aetheris use?", width - 4, self._attr(bold=True))
         row += 1
         for index, (_, label) in enumerate(DB_OPTIONS):
             selected = index == self.option_cursor
             cursor = ">" if selected else " "
             attr = self._attr(pair=PAIR_SELECTED, reverse=True) if selected else A_NORMAL
-            screen.addnstr(row, 2, f"{cursor} {label}", width - 4, attr)
+            self._put(screen, row, 2, f"{cursor} {label}", width - 4, attr)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "SQLite stores data in a local .db file - ideal for tests.", width - 4, self._attr(dim=True))
+        self._put(screen, row, 2, "SQLite stores data in a local .db file - ideal for tests.",
+                  width - 4, self._attr(dim=True))
         self._footer(screen, height, width, "Up/Down or j/k: move   Enter: continue   Esc/q: back")
 
     def _draw_confirm(self, screen, height: int, width: int) -> None:
@@ -351,25 +422,25 @@ class TuiState:
         labels = dict(ACTIONS)
         title = labels.get(action, action)
         row = 5
-        screen.addnstr(row, 2, "Confirm your choices:", width - 4, self._attr(bold=True))
+        self._put(screen, row, 2, "Confirm your choices:", width - 4, self._attr(bold=True))
         row += 1
-        screen.addnstr(row, 2, f"  Action: {title}", width - 4)
+        self._put(screen, row, 2, f"  Action: {title}", width - 4)
         row += 1
         if action in DEPS_ACTIONS:
             deps = [DEPENDENCIES[i].label for i in sorted(self.selected_deps)]
-            screen.addnstr(row, 2, f"  Dependencies: {', '.join(deps) or 'none'}", width - 4)
+            self._put(screen, row, 2, f"  Dependencies: {', '.join(deps) or 'none'}", width - 4)
             row += 1
         if action in OPTIONS_ACTIONS:
-            screen.addnstr(row, 2, f"  Directory: {self.dir_input}", width - 4)
+            self._put(screen, row, 2, f"  Directory: {self.dir_input}", width - 4)
             row += 1
             env_label = dict(ENV_TIMING_OPTIONS)[self.env_timing]
-            screen.addnstr(row, 2, f"  .env: {env_label}", width - 4)
+            self._put(screen, row, 2, f"  .env: {env_label}", width - 4)
             row += 1
             db_label = dict(DB_OPTIONS)[self.db_mode]
-            screen.addnstr(row, 2, f"  Database: {db_label}", width - 4)
+            self._put(screen, row, 2, f"  Database: {db_label}", width - 4)
             row += 1
         row += 1
-        screen.addnstr(row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
+        self._put(screen, row, 2, "Enter: start   Esc/q: back", width - 4, self._attr(dim=True))
         self._footer(screen, height, width, "Enter: start   Esc/q: back to the main menu")
 
     def _draw_run(self, screen, height: int, width: int) -> None:
@@ -377,11 +448,12 @@ class TuiState:
         labels = dict(ACTIONS)
         spinner = SPINNER[self._frame % len(SPINNER)]
         state = "Running" if self.running else "Finished"
-        screen.addnstr(5, 2, f"{spinner} {state}: {labels.get(action, action)}", width - 4, self._attr(bold=True, pair=PAIR_ACCENT if self.running else None))
+        self._put(screen, 5, 2, f"{spinner} {state}: {labels.get(action, action)}", width - 4,
+                  self._attr(bold=True, pair=PAIR_ACCENT if self.running else None))
 
         row = 7
         for line in self.progress_lines[- (height - 12):]:
-            screen.addnstr(row, 2, line[: width - 4], width - 4, self._attr(dim=True))
+            self._put(screen, row, 2, line[: width - 4], width - 4, self._attr(dim=True))
             row += 1
 
         if self.finished:
@@ -389,21 +461,38 @@ class TuiState:
             for name, ok in self.finished:
                 status = "OK" if ok else "FAIL"
                 pair = PAIR_ACCENT if ok else PAIR_ERROR
-                screen.addnstr(row, 2, f"  [{status}] {name}", width - 4, self._attr(pair=pair, bold=ok))
+                self._put(screen, row, 2, f"  [{status}] {name}", width - 4,
+                          self._attr(pair=pair, bold=ok))
                 row += 1
 
         if not self.running:
             row += 1
-            screen.addnstr(row, 2, self.final_message, width - 4, self._attr(bold=True, pair=PAIR_ACCENT if self.final_message.startswith("All") else PAIR_ERROR))
-            self._footer(screen, height, width, "Press any key to exit.")
+            self._put(screen, row, 2, self.final_message, width - 4,
+                      self._attr(bold=True, pair=PAIR_ACCENT if self.final_message.startswith("All") else PAIR_ERROR))
+
+    def _draw_done(self, screen, height: int, width: int) -> None:
+        row = 5
+        ok = self.final_message.startswith("All")
+        self._put(screen, row, 2, ("SUCCESS" if ok else "FAILED"), width - 4,
+                  self._attr(bold=True, pair=PAIR_ACCENT if ok else PAIR_ERROR))
+        row += 2
+        self._put(screen, row, 2, self.final_message, width - 4, self._attr(bold=True))
+        row += 2
+        if ok:
+            self._put(screen, row, 2, "Next steps:", width - 4, self._attr(bold=True, pair=PAIR_ACCENT))
+            row += 1
+            for step in NEXT_STEPS:
+                self._put(screen, row, 4, f"- {step}", width - 6)
+                row += 1
+        self._footer(screen, height, width, "Press any key to exit.")
 
     # ------------------------------------------------------------------
     # Input
     # ------------------------------------------------------------------
 
     def handle(self, key: int) -> None:
-        if self.screen_name == "run":
-            if not self.running:
+        if self.screen_name in ("run", "done"):
+            if self.screen_name == "done" or not self.running:
                 raise SystemExit(0)
             return
 
@@ -500,8 +589,10 @@ class TuiState:
                 if key == -1:
                     self._frame += 1
                     continue
-                if not self.running:
-                    raise SystemExit(0)
+                continue
+            if self.screen_name == "run":
+                # Worker finished: move to the final summary screen.
+                self.screen_name = "done"
                 continue
             screen.timeout(-1)
             key = screen.getch()
@@ -512,6 +603,7 @@ def run_tui() -> int:
     """Run the interactive wizard. Returns 0 on success."""
     if curses is None:
         return run_prompt_fallback()
+    enable_utf8_console()
     try:
         return curses.wrapper(TuiState().run)
     except SystemExit:

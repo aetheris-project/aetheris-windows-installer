@@ -175,3 +175,51 @@ class TestTuiState:
         state.wait_finished()
         assert not state.running
         assert state.finished, "expected at least one executed step"
+
+    def test_utf8_console_enabler_is_best_effort(self, monkeypatch) -> None:
+        """enable_utf8_console never raises, even on non-Windows hosts."""
+        from aetheris_wininstaller import tui
+
+        monkeypatch.setattr(tui.os, "name", "posix")
+        tui.enable_utf8_console()  # must not raise
+
+
+class _RejectUnicodeScreen:
+    """Fake curses screen that raises on any non-ASCII glyph."""
+
+    def __init__(self) -> None:
+        self.buffer: list[str] = []
+        self.yx = (24, 80)
+        self.chars = set()
+
+    def getmaxyx(self) -> tuple[int, int]:
+        return self.yx
+
+    def erase(self) -> None:
+        self.buffer = []
+
+    def refresh(self) -> None:
+        pass
+
+    def addnstr(self, y: int, x: int, text: str, n: int, attr: int = 0) -> None:
+        from aetheris_wininstaller.tui import A_BOLD
+
+        self.chars.update(text)
+        if any(ord(ch) > 127 for ch in text):
+            raise ValueError("glyph not supported")
+        self.buffer.append((y, x, text))
+
+
+def test_draw_falls_back_to_ascii_frame() -> None:
+    """A terminal that rejects Unicode borders must still render the menu."""
+    from aetheris_wininstaller import tui
+
+    state = TuiState()
+    screen = _RejectUnicodeScreen()
+    state.draw(screen)
+    # The unicode top border failed, so the frame switches to ASCII and the
+    # content still draws - the screen is not blank.
+    assert state._unicode_borders is False
+    assert any("AETHERIS" in text for _, _, text in screen.buffer)
+    assert any("Choose an action" in text for _, _, text in screen.buffer)
+    assert any("Install dependencies only" in text for _, _, text in screen.buffer)
