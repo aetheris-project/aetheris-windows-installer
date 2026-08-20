@@ -8,7 +8,7 @@ No emoji, no colored blocks.
 from __future__ import annotations
 
 TITLE = "AETHERIS Windows Installer"
-SUBTITLE = "Control plane setup on Windows - Docker based"
+SUBTITLE = "Control panel setup on Windows - Docker based"
 
 
 def _rule(width: int = 60) -> str:

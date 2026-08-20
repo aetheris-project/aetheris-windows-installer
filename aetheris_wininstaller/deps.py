@@ -34,7 +34,7 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency(
         "OpenJS.NodeJS.LTS",
         "Node.js LTS",
-        description="Runtime for the Aetheris control plane (web + workers)",
+        description="Runtime for the Aetheris control panel (web + workers)",
     ),
     Dependency(
         "Python.Python.3.12",

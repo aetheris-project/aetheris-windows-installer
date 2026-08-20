@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - Windows Python without windows-curses
     curses = None  # type: ignore[assignment]
 
 TITLE = "Aetheris Windows Installer"
-SUBTITLE = "Control plane setup on Windows - Docker based"
+SUBTITLE = "Control panel setup on Windows - Docker based"
 
 ACTIONS = [
     ("deps", "Install dependencies only (Docker, Git, Node.js, Python)"),

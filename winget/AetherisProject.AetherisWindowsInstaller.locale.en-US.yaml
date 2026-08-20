@@ -11,7 +11,7 @@ PackageName: Aetheris
 PackageUrl: https://github.com/aetheris-project/aetheris-app
 License: AGPL-3.0
 LicenseUrl: https://raw.githubusercontent.com/aetheris-project/aetheris-windows-installer/main/LICENSE.md
-ShortDescription: Interactive Windows installer for the Aetheris self-hosted cloud control plane
+ShortDescription: Interactive Windows installer for the Aetheris self-hosted cloud control panel
 Description: |-
   Aetheris is a self-hosted cloud management platform with billing, virtualization
   adapters, and a web dashboard. This installer manages the Docker stack, installs

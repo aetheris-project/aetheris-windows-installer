@@ -13,7 +13,7 @@ from .options import DB_POSTGRES, DB_SQLITE, ENV_TIMING_LATER, ENV_TIMING_NOW, I
 from .tui import run_tui
 
 DESCRIPTION = (
-    "Interactive installer for the Aetheris control plane on Windows. "
+    "Interactive installer for the Aetheris control panel on Windows. "
     "Runs the platform as a Docker stack and manages dependencies via winget."
 )
 

@@ -1,7 +1,7 @@
 [project]
 name = "aetheris-windows-installer"
 version = "1.0.0"
-description = "Interactive Windows installer for the Aetheris control plane (TUI, Docker-based)"
+description = "Interactive Windows installer for the Aetheris control panel (TUI, Docker-based)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE.md" }

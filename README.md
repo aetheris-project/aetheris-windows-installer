@@ -1,6 +1,6 @@
 # Aetheris Windows Installer
 
-Interactive installer for the [Aetheris control plane](https://github.com/aetheris-project/aetheris-app) on Windows.
+Interactive installer for the [Aetheris control panel](https://github.com/aetheris-project/aetheris-app) on Windows.
 
 The platform runs as a Docker stack (web, worker, backend, PostgreSQL, Redis). This installer manages everything around it: it can install the required dependencies through winget, clone and start the stack, or tear it all down again.
 
