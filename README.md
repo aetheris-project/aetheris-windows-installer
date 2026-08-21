@@ -21,6 +21,36 @@ The platform runs as a Docker stack (web, worker, backend, PostgreSQL, Redis). T
 - Windows 10/11, 64-bit
 - 4 GB RAM or more (Docker Desktop needs it)
 
+## Download
+
+### Latest release (recommended)
+
+```
+curl -L -o aetheris-windows-installer.exe ^
+  https://github.com/aetheris-project/aetheris-windows-installer/releases/latest/download/aetheris-windows-installer.exe
+```
+
+### Pin a specific version
+
+```
+curl -L -o aetheris-windows-installer.exe ^
+  https://github.com/aetheris-project/aetheris-windows-installer/releases/download/v1.0.0/aetheris-windows-installer.exe
+```
+
+PowerShell alternative:
+
+```powershell
+Invoke-WebRequest -Uri https://github.com/aetheris-project/aetheris-windows-installer/releases/latest/download/aetheris-windows-installer.exe -OutFile aetheris-windows-installer.exe
+```
+
+Verify the download (optional but recommended):
+
+```
+certutil -hashfile aetheris-windows-installer.exe SHA256
+```
+
+The current release hash is published in the [winget manifest](winget/AetherisProject.AetherisWindowsInstaller.installer.yaml).
+
 ## Usage
 
 ### Via winget (recommended)
