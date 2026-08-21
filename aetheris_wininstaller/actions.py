@@ -12,7 +12,7 @@ from pathlib import Path
 from .deps import Dependency
 from .envfile import write_env_file
 from .options import InstallOptions
-from .paths import APP_REPO_URL, InstallPaths, detect_db_mode, is_docker_installed
+from .paths import APP_REPO_URL, InstallPaths, detect_db_mode, docker_command, find_docker
 from .runner import ActionStep, CommandResult, run_command
 
 WINGET_BASE = ["winget", "install", "--exact", "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]
@@ -55,13 +55,26 @@ def ensure_docker_ready(*, dry_run: bool = False, quiet: bool = False) -> Comman
     """Verify the Docker engine is reachable; gives the user a hint otherwise."""
     if dry_run:
         return CommandResult(ok=True, returncode=0, output="[dry-run] docker not checked")
-    if not is_docker_installed():
+    docker = find_docker()
+    if docker is None:
         return CommandResult(
             ok=False,
             returncode=-1,
-            output="docker.exe was not found on PATH. Install Docker Desktop and start it, then re-run.",
+            output=(
+                "Docker Desktop was not found. Install Docker Desktop from the "
+                "dependencies step, start it once, then re-run."
+            ),
         )
-    probe = run_command(["docker", "info", "--format", "{{.ServerVersion}}"], quiet=quiet)
+    probe = run_command([str(docker), "info", "--format", "{{.ServerVersion}}"], quiet=quiet)
+    if not probe.ok:
+        return CommandResult(
+            ok=False,
+            returncode=probe.returncode,
+            output=(
+                "Docker Desktop is installed but the engine is not running. "
+                "Start Docker Desktop, wait for the whale to stop moving, then re-run."
+            ),
+        )
     return probe
 
 
@@ -84,7 +97,7 @@ def _compose_up(paths: InstallPaths, options: InstallOptions, *, dry_run: bool, 
         )
     compose_file = paths.compose_for(options.db_mode)
     return run_command(
-        ["docker", "compose", "-f", str(compose_file), "up", "-d", "--build"],
+        docker_command("compose", "-f", str(compose_file), "up", "-d", "--build"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -180,7 +193,7 @@ def stack_status(
     if progress:
         progress("Querying stack status...")
     ps = run_command(
-        ["docker", "compose", "-f", str(compose_file), "ps"],
+        docker_command("compose", "-f", str(compose_file), "ps"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -216,7 +229,7 @@ def start_stack(
     if progress:
         progress("Starting the Aetheris stack...")
     up = run_command(
-        ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+        docker_command("compose", "-f", str(compose_file), "up", "-d"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -255,7 +268,7 @@ def stop_stack(
     if progress:
         progress("Stopping the Aetheris stack...")
     stop = run_command(
-        ["docker", "compose", "-f", str(compose_file), "stop"],
+        docker_command("compose", "-f", str(compose_file), "stop"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -297,7 +310,7 @@ def update_stack(
     if progress:
         progress("Pulling the latest container images...")
     pull = run_command(
-        ["docker", "compose", "-f", str(compose_file), "pull"],
+        docker_command("compose", "-f", str(compose_file), "pull"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -308,7 +321,7 @@ def update_stack(
     if progress:
         progress("Recreating containers with the updated images...")
     up = run_command(
-        ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+        docker_command("compose", "-f", str(compose_file), "up", "-d"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -349,7 +362,7 @@ def stack_logs(
     if progress:
         progress(f"Fetching the last {tail} log lines...")
     logs = run_command(
-        ["docker", "compose", "-f", str(compose_file), "logs", f"--tail={tail}", "--timestamps"],
+        docker_command("compose", "-f", str(compose_file), "logs", f"--tail={tail}", "--timestamps"),
         cwd=str(paths.app),
         dry_run=dry_run,
         quiet=quiet,
@@ -384,7 +397,7 @@ def uninstall_software(
         if progress:
             progress("Stopping containers and removing volumes...")
         down = run_command(
-            ["docker", "compose", "-f", str(compose_file), "down", "-v", "--remove-orphans"],
+            docker_command("compose", "-f", str(compose_file), "down", "-v", "--remove-orphans"),
             cwd=str(paths.app),
             dry_run=dry_run,
             quiet=quiet,

@@ -182,7 +182,9 @@ class TestActions:
         assert names == ["stack-update-pull", "stack-update"]
         assert all(s.result.ok for s in steps)
         captured = capsys.readouterr()
-        assert "docker compose" in captured.out
+        # docker may be invoked as a bare command or as the full Docker
+        # Desktop path; both forms carry the compose subcommand.
+        assert "compose" in captured.out
         assert "pull" in captured.out
 
     def test_update_stack_not_installed_is_a_clear_failure(self, tmp_path: Path) -> None:
@@ -225,7 +227,7 @@ class TestActions:
         assert stop_stack(dry_run=True)[0].name == "stack-stop"
         assert stack_logs(dry_run=True)[0].name == "stack-logs"
         captured = capsys.readouterr()
-        assert "docker compose" in captured.out
+        assert "compose" in captured.out
         assert "--tail=200" in captured.out
 
     def test_management_not_installed_is_a_clear_failure(self, tmp_path: Path) -> None:
@@ -265,6 +267,57 @@ class TestActions:
             assert steps[0].result.ok is False
         finally:
             actions_module._winget_install = original  # type: ignore[assignment]
+
+
+class TestDockerDetection:
+    def test_find_docker_from_path(self, monkeypatch, tmp_path: Path) -> None:
+        from aetheris_wininstaller import paths
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        docker_exe = bin_dir / "docker.exe"
+        docker_exe.write_text("", encoding="utf-8")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert paths.find_docker() == docker_exe
+        assert paths.is_docker_installed()
+
+    def test_find_docker_from_desktop_paths(self, monkeypatch, tmp_path: Path) -> None:
+        """A freshly installed Docker Desktop is found even when the process
+        PATH is stale (winget updates the registry, not the running process)."""
+        from aetheris_wininstaller import paths
+
+        desktop_bin = tmp_path / "Docker" / "Docker" / "resources" / "bin"
+        desktop_bin.mkdir(parents=True)
+        (desktop_bin / "docker.exe").write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path))
+
+        assert paths.find_docker() == desktop_bin / "docker.exe"
+        assert paths.is_docker_installed()
+
+    def test_find_docker_returns_none_when_absent(self, monkeypatch, tmp_path: Path) -> None:
+        from aetheris_wininstaller import paths
+
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "none"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "none2"))
+
+        assert paths.find_docker() is None
+        assert not paths.is_docker_installed()
+
+    def test_docker_command_uses_resolved_exe(self, monkeypatch, tmp_path: Path) -> None:
+        from aetheris_wininstaller import paths
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "docker.exe").write_text("", encoding="utf-8")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        cmd = paths.docker_command("compose", "ps")
+        assert cmd[0] == str(bin_dir / "docker.exe")
+        assert cmd[1:] == ["compose", "ps"]
 
 
 class TestRunner:

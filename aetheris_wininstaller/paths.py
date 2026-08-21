@@ -72,10 +72,44 @@ def detect_db_mode(env_file: Path) -> str | None:
     return None
 
 
-def is_docker_installed() -> bool:
-    """Check that a docker CLI is on PATH (Docker Desktop provides it)."""
-    return any(
-        Path(p, "docker.exe").exists()
-        for p in os.environ.get("PATH", "").split(os.pathsep)
-        if p.strip()
+def docker_desktop_paths() -> tuple[Path, ...]:
+    """Standard Docker Desktop install locations, resolved at call time so
+    tests and per-user installs can vary the environment."""
+    return (
+        # %ProgramFiles%\Docker\Docker\resources\bin\docker.exe
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe",
+        # %LOCALAPPDATA%\Docker\Docker\resources\bin\docker.exe (per-user install)
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Docker" / "Docker" / "resources" / "bin" / "docker.exe",
     )
+
+
+def find_docker() -> Path | None:
+    """Locate the docker CLI.
+
+    Prefers a docker.exe already on PATH, then falls back to the standard
+    Docker Desktop install locations. winget updates the registry PATH but
+    never the running process, so a freshly installed Docker Desktop would
+    otherwise be invisible until the next login.
+    """
+    for p in os.environ.get("PATH", "").split(os.pathsep):
+        if p.strip():
+            candidate = Path(p, "docker.exe")
+            if candidate.exists():
+                return candidate
+    for candidate in docker_desktop_paths():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def is_docker_installed() -> bool:
+    """Check that a docker CLI is available (PATH or Docker Desktop paths)."""
+    return find_docker() is not None
+
+
+def docker_command(*args: str) -> list[str]:
+    """Build a docker command line, using the resolved docker executable."""
+    docker = find_docker()
+    if docker is not None:
+        return [str(docker), *args]
+    return ["docker", *args]

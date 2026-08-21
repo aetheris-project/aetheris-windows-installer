@@ -296,6 +296,48 @@ class TestTuiState:
         monkeypatch.setattr(tui.os, "name", "posix")
         tui.enable_utf8_console()  # must not raise
 
+    def test_docker_not_ready_is_guidance_not_failure(self, monkeypatch) -> None:
+        """docker-ready / clone-app / compose-up failures must not show a
+        hard FAILED: on a fresh machine Docker Desktop was just installed
+        and needs a manual first start."""
+        from aetheris_wininstaller import tui
+        from aetheris_wininstaller.actions import ActionStep
+        from aetheris_wininstaller.runner import CommandResult
+
+        def fake_run_action(action, *, deps=None, options=None, dry_run=False, quiet=False, progress=None):
+            return [
+                ActionStep(name="dependency:Docker.DockerDesktop", result=CommandResult(ok=True, returncode=0, output="ok")),
+                ActionStep(name="docker-ready", result=CommandResult(ok=False, returncode=-1, output="engine not running")),
+            ]
+
+        monkeypatch.setattr(tui, "run_action", fake_run_action)
+
+        state = TuiState()
+        state.pending_action = "both"
+        state.confirm_and_run()
+        state.wait_finished()
+        assert "Docker is not ready yet" in state.final_message
+        assert "FAILED" not in state.final_message
+
+    def test_hard_step_failure_is_still_failure(self, monkeypatch) -> None:
+        """A real dependency failure must keep showing FAILED."""
+        from aetheris_wininstaller import tui
+        from aetheris_wininstaller.actions import ActionStep
+        from aetheris_wininstaller.runner import CommandResult
+
+        def fake_run_action(action, *, deps=None, options=None, dry_run=False, quiet=False, progress=None):
+            return [
+                ActionStep(name="dependency:Git.Git", result=CommandResult(ok=False, returncode=1, output="winget failed")),
+            ]
+
+        monkeypatch.setattr(tui, "run_action", fake_run_action)
+
+        state = TuiState()
+        state.pending_action = "both"
+        state.confirm_and_run()
+        state.wait_finished()
+        assert "Some steps failed" in state.final_message
+
 
 class _RejectUnicodeScreen:
     """Fake curses screen that raises on any non-ASCII glyph."""

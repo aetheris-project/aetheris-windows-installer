@@ -43,7 +43,7 @@ from .options import (
     ENV_TIMING_NOW,
     InstallOptions,
 )
-from .paths import InstallPaths, detect_db_mode, home_dir
+from .paths import InstallPaths, detect_db_mode, docker_command, home_dir
 from .runner import stream_command
 
 try:
@@ -257,7 +257,7 @@ class TuiState:
                 f"[aetheris] following logs: docker compose -f {compose_file.name} logs -f"
             )
             result = stream_command(
-                ["docker", "compose", "-f", str(compose_file), "logs", "-f", "--tail=100", "--timestamps"],
+                docker_command("compose", "-f", str(compose_file), "logs", "-f", "--tail=100", "--timestamps"),
                 cwd=str(paths.app),
                 on_line=self._append_log,
                 stop_event=self._stop_follow_event,
@@ -291,12 +291,26 @@ class TuiState:
             for step in steps:
                 for line in step.result.lines[-3:]:
                     self.progress_lines.append(f"    {line}")
-            all_ok = all(ok for _, ok in self.finished)
-            self.final_message = (
-                "All steps completed successfully."
-                if all_ok
-                else "Some steps failed. Review the output above."
+            # Environment-dependent steps (Docker engine, repo fetch, compose
+            # up) are best-effort on a fresh machine: Docker Desktop was just
+            # installed and needs a manual first start. Report them as
+            # guidance instead of a hard failure, exactly like the CLI does.
+            best_effort = {"docker-ready", "clone-app", "compose-up"}
+            hard_failures = [
+                name for name, ok in self.finished if not ok and name not in best_effort
+            ]
+            environment_pending = any(
+                not ok and name in best_effort for name, ok in self.finished
             )
+            if hard_failures:
+                self.final_message = "Some steps failed. Review the output above."
+            elif environment_pending:
+                self.final_message = (
+                    "Docker is not ready yet. Start Docker Desktop once, then "
+                    "pick 'Start the Aetheris stack' from the menu."
+                )
+            else:
+                self.final_message = "All steps completed successfully."
         finally:
             self.running = False
 
@@ -730,7 +744,7 @@ class TuiState:
 
     def _draw_done(self, screen, height: int, width: int) -> None:
         row = 5
-        ok = self.final_message.startswith("All")
+        ok = self.final_message.startswith("All") or self.final_message.startswith("Docker")
         self._put(screen, row, 2, ("SUCCESS" if ok else "FAILED"), width - 4,
                   self._attr(bold=True, pair=PAIR_ACCENT if ok else PAIR_ERROR))
         row += 2
@@ -742,6 +756,15 @@ class TuiState:
             row += 1
             self._put(screen, row, 2, "and relaunch as the new version automatically.", width - 4,
                       self._attr(bold=True, pair=PAIR_ACCENT))
+        elif ok and self.final_message.startswith("Docker"):
+            self._put(screen, row, 2, "After Docker Desktop is running:", width - 4,
+                      self._attr(bold=True, pair=PAIR_ACCENT))
+            row += 1
+            self._put(screen, row, 4, "- Select 'Start the Aetheris stack' from the menu", width - 6)
+            row += 1
+            self._put(screen, row, 4, "- Or re-run with --software", width - 6)
+            row += 1
+            self._put(screen, row, 4, "- The stack is already cloned and configured", width - 6)
         elif ok:
             self._put(screen, row, 2, "Next steps:", width - 4, self._attr(bold=True, pair=PAIR_ACCENT))
             row += 1
